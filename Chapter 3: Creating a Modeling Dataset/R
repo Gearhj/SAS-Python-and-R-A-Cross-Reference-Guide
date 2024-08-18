@@ -1,1 +1,303 @@
 
+#Frequency distribution code:
+library("data.table")                                                                                                               
+freq <- table(loan_samp$loan_status)
+print(freq)
+
+############################################################################################################
+
+#Target variable assessment:
+loan_samp$bad <-ifelse(loan_samp$loan_status=='Charged Off' | loan_samp$loan_status=='Does not meet the credit policy. Status:Charged Off',1,0)
+
+############################################################################################################
+
+#Cross-tab frequency distribution code:
+table(loan_samp$issue_d, loan_samp$bad)
+
+############################################################################################################
+
+#Convert character variable to date:
+loan_samp$issue_d <- as.Date(loan_samp$issue_d, format = "%m/%d/%Y")
+
+############################################################################################################
+
+#Limit date range of modeling dataset:
+loan_data <- subset(loan_samp, issue_d >= as.Date("2014-01-01") & issue_d <= as.Date("2017-12-31"))
+
+############################################################################################################
+
+#Summary stats for numeric data:
+summary(loan_data)
+
+############################################################################################################
+
+#Histogram development with 50 bins:
+hist(loan_data$loan_amnt, breaks=50, col='blue')
+
+############################################################################################################
+#Outlier detection and adjustment
+#select numeric data only
+filter_numeric_columns <- function(df) {
+  numeric_cols <- sapply(df, is.numeric)
+  df[, ..numeric_cols, with=FALSE]
+}
+ 
+numeric_data <- filter_numeric_columns(loan_data)
+ 
+#infer outliers with 1.5 IQR rule
+ 
+replace_outliers <- function(x) {
+  
+  #calculate the first and thrid quartiles
+  q1 <- quantile(x, probs = 0.25, na.rm = TRUE)
+  q3 <- quantile(x, probs = 0.75, na.rm = TRUE)
+  
+  #calcuate the interquartile range (IQR)
+  iqr <- q3 - q1
+  
+  #calculate the lower and upper bounds for the outliers
+  upper <- q3 + 1.5 * iqr
+  lower <- q1 - 1.5 * iqr
+  
+  #replace outlier values with the 1.5 IQR rule values
+  x[x > upper] <- upper
+  x[x < lower] <- lower
+  x
+}
+ 
+library(dplyr)
+ 
+#replace outliers in column x
+outliers <- mutate(numeric_data, x = replace_outliers(x))
+summary(outliers)
+
+
+############################################################################################################
+
+
+#Feature selection through correlation analysis
+# Load the necessary libraries
+library(corrplot)
+library(caret)
+ 
+# Calculate the correlation matrix
+cor_matrix <- cor(numeric_data)
+ 
+# Plot the correlation matrix to visualize the correlations
+corrplot(cor_matrix, method = "circle")
+ 
+# Find highly correlated variables with a threshold of 0.8
+high_cor <- findCorrelation(cor_matrix, cutoff = 0.8)
+ 
+# Drop highly correlated vars and create the output data set
+CORR_limit <- numeric_data[, -high_cor]
+
+
+
+############################################################################################################
+
+
+#Filtering with wrapper method:
+library(caret)
+ 
+# Filter numeric columns including the target variable
+numeric_columns <- names(loan_data)[sapply(loan_data, is.numeric)]
+numeric_columns <- c(numeric_columns, "bad")  # Include the target variable
+ 
+# Create a copy of the subset to avoid modifying the original data frame
+loan_data_numeric <- loan_data[, numeric_columns]
+ 
+# Remove rows with missing values
+loan_data_numeric <- na.omit(loan_data_numeric)
+ 
+# Separate the features (X) and target variable (y)
+X <- loan_data_numeric[, !(names(loan_data_numeric) %in% "bad")]
+y <- loan_data_numeric$bad
+ 
+# Create the model to be used for feature selection
+model <- train(
+  X,
+  y,
+  method = "glm",
+  trControl = trainControl(method = "none"),
+  metric = "None"
+)
+ 
+# Perform Recursive Feature Elimination (RFE)
+rfe_result <- rfe(
+  X,
+  y,
+  sizes = 5,  # Select top 5 features
+  rfeControl = rfeControl(functions = glmFuncs),
+  method = "glm"
+)
+ 
+# Get the selected features
+selected_features <- colnames(X)[rfe_result$optVariables]
+print(selected_features)
+
+
+
+############################################################################################################
+
+
+#Filtering with embedded method:
+library(caret)
+ 
+# Filter numeric columns including the target variable
+numeric_columns <- names(loan_data)[sapply(loan_data, is.numeric)]
+numeric_columns <- c(numeric_columns, "bad")  # Include the target variable
+ 
+# Create a copy of the data set to avoid modifying the original data frame
+filtered_data <- loan_data[, numeric_columns]
+ 
+# Remove rows with missing values
+filtered_data <- na.omit(filtered_data)
+ 
+# Separate the features (X) and target variable (y)
+X <- filtered_data[, !(names(filtered_data) %in% "bad")]
+y <- filtered_data$bad
+ 
+# Create the Random Forest classification model and perform feature selection
+model <- train(
+  X,
+  y,
+  method = "rf",
+  trControl = trainControl(method = "none"),
+  metric = "None"
+)
+ 
+# Perform feature selection using embedded methods (Random Forest)
+selected_features <- varImp(model)$importance$Feature
+print(selected_features)
+
+
+
+############################################################################################################
+
+
+#Feature scaling:
+library(caret)
+numeric_cols <- sapply(loan_data, is.numeric)
+preprocess_params <- preProcess(loan_data[, numeric_cols], method = c("center", "scale"))
+loan_data_scaled <- predict(preprocess_params, loan_data[, numeric_cols])
+
+
+
+############################################################################################################
+
+
+#Encoding categorical variables:
+dummy_vars <- model.matrix(~ home_ownership - 1, data=loan_data)
+loan_data <- cbind(loan_data, dummy_vars)
+loan_data <- loan_data[, !grepl("^home_ownership", colnames(loan_data))]
+
+
+
+############################################################################################################
+
+
+#Creating polynomial variables:
+loan_amnt_poly <- poly(loan_data$loan_amnt, degree = 2, raw = TRUE)
+loan_amnt_poly <- data.frame(loan_amnt_poly)
+
+
+
+############################################################################################################
+
+
+#Create feature interactions:
+loan_data$DTI_INC_INTERACTION <- loan_data$dti * loan_data$annual_inc
+
+
+############################################################################################################
+
+
+#Dimensionality Reduction with PCA:
+library(dplyr)
+library(factoextra)
+ 
+data <- loan_data %>%
+  select(total_acc, open_acc, pub_rec, pub_rec_bankruptcies)
+ 
+# Standardize the data
+data_std <- scale(data)
+ 
+# Perform PCA
+pca_result <- prcomp(data_std)
+ 
+# Access the principal components
+principal_components <- pca_result$rotation
+
+
+
+############################################################################################################
+
+
+#Dataset balancing - 50/50 split:
+	
+library(dplyr)
+ 
+# Separate positive and negative cases
+positive_cases <- loan_data %>% filter(bad == 1)
+negative_cases <- loan_data %>% filter(bad == 0)
+ 
+# Sample the negative cases to match the number of positive cases
+negative_sampled <- negative_cases %>% sample_n(nrow(positive_cases), replace = FALSE, set.seed(42))
+ 
+# Combine the positive and sampled negative cases
+balanced_data <- bind_rows(positive_cases, negative_sampled)
+ 
+# Check frequency distribution of the target variable
+table(balanced_data$bad)
+
+
+
+############################################################################################################
+############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
