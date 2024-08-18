@@ -1,1 +1,94 @@
+#Random Forest Model Code:
+# Import necessary libraries
+library(randomForest)
+library(caret)
+library(pROC)
 
+# Load the data
+train_encoded <- read.csv("/...INPUT YOUR FILE PATHWAY.../train_encoded.csv")
+OOT_encoded <- read.csv("/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv")
+
+# Define predictors excluding the specified variables and the target variable
+predictors <- setdiff(names(train_encoded), "bad")
+
+# Check if excluded variables are in OOT_encoded columns, if not then add them
+missing_cols <- setdiff(predictors, names(OOT_encoded))
+OOT_encoded[missing_cols] <- 0
+
+# Split the data into training and validation sets (80/20 split) using stratified sampling
+trainIndex <- createDataPartition(train_encoded$bad, p = .8, list = FALSE, times = 1)
+X_train <- train_encoded[trainIndex, predictors]
+y_train <- train_encoded[trainIndex, "bad"]
+X_val <- train_encoded[-trainIndex, predictors]
+y_val <- train_encoded[-trainIndex, "bad"]
+
+# Build the Random Forest model
+rf <- randomForest(x = X_train, y = as.factor(y_train), ntree = 100)
+
+# Define hyperparameters to tune
+tuneGrid <- expand.grid(.mtry=c(2, sqrt(ncol(X_train)), ncol(X_train)))
+
+# Tune hyperparameters using caret's train function
+control <- trainControl(method="cv", number=5)
+tuned_rf <- train(x=X_train, y=y_train, method="rf", tuneGrid=tuneGrid, trControl=control)
+
+# Get the best model
+best_model <- tuned_rf$finalModel
+
+# Apply the model to the OOT dataset to get probabilities
+OOT_probabilities <- predict(best_model, newdata=OOT_encoded[predictors], type="prob")
+
+# Define your threshold
+threshold <- 0.2
+
+# Apply threshold to get predictions
+OOT_predictions <- ifelse(OOT_probabilities[,2] > threshold, 1, 0)
+
+# Create performance metrics using caret's confusionMatrix function
+print(confusionMatrix(data = OOT_predictions, reference = as.factor(OOT_encoded$bad)))
+
+# Plot ROC curve
+roc_obj <- roc(response=OOT_encoded$bad, predictor=OOT_probabilities[,2])
+plot(roc_obj)
+
+
+
+###############################################################################
+
+
+#Gradient Boosting Model Code:
+# Import necessary libraries
+library(xgboost)
+library(caret)
+library(pROC)
+
+# Load the data
+train_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv')
+OOT_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv')
+
+# Define predictors and the target variable
+predictors <- names(train_encoded)[!names(train_encoded) %in% 'bad']
+
+# Check if excluded variables are in OOT_encoded columns, if not then add them
+missing_cols <- setdiff(predictors, names(OOT_encoded))
+OOT_encoded[missing_cols] <- 0
+
+# Split the data into training and validation sets (80/20 split) using stratified sampling
+trainIndex <- createDataPartition(train_encoded$bad, p = .8, list = FALSE, times = 1)
+X_train <- train_encoded[ trainIndex, predictors]
+y_train <- train_encoded[ trainIndex, 'bad']
+X_val <- train_encoded[-trainIndex, predictors]
+y_val <- train_encoded[-trainIndex, 'bad']
+
+# Build the XGBoost model
+xgb <- xgboost(data = as.matrix(X_train), label = as.numeric(as.factor(y_train))-1, nrounds=100, objective="binary:logistic")
+
+# Apply the model to the OOT dataset
+OOT_predictions <- predict(xgb, as.matrix(OOT_encoded[, predictors]))
+
+# Create performance metrics using the function defined earlier
+roc_obj <- roc(OOT_encoded$bad, OOT_predictions)
+print(roc_obj)
+
+# Plot ROC curve
+plot(roc_obj)
