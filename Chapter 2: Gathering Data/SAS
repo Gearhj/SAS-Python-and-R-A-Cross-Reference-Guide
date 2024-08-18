@@ -1,1 +1,25 @@
 
+/*Import data into SAS environment*/
+
+LIBNAME MYDATA BASE " /...INPUT YOUR FILE PATHWAY.../"; 
+ 
+FILENAME REFFILE '/...INPUT YOUR FILE PATHWAY.../accepted_2007_to_2018Q4.csv'; 
+ 
+%let vars = id loan_status loan_amnt term int_rate grade sub_grade emp_length home_ownership annual_inc verification_status issue_d purpose dti earliest_cr_line open_acc pub_rec revol_bal revol_util total_acc application_type mort_acc pub_rec_bankruptcies; 
+ 
+PROC IMPORT DATAFILE=REFFILE  
+     DBMS=CSV 
+     OUT= MYDATA.Loan (keep=&vars.); 
+     GETNAMES=YES; 
+ RUN;
+
+
+*******************************************************************;
+
+
+/*Create simple random sample*/
+PROC SURVEYSELECT DATA=MYDATA.LOAN METHOD=srs N=100000 SEED=42
+                  OUT=MYDATA.LOAN_SAMP;
+RUN;
+
+
