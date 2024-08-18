@@ -1,1 +1,344 @@
+/*Random Forest Model Code:*/
+/*LIBNAME james 'INPUT FILE PATHWAY';*/
 
+/* Load the data */
+DATA train_encoded;
+  SET james.train_encoded;
+RUN;
+
+DATA oot_encoded;
+  SET james.oot_encoded;
+RUN;
+
+/* Create global variable for predictors */
+PROC CONTENTS NOPRINT DATA = train_encoded (DROP= id bad) OUT = var (KEEP = name); RUN;
+PROC SQL NOPRINT; SELECT name INTO:predictors SEPARATED BY " " FROM var; QUIT;
+%PUT &predictors; RUN;
+
+/* Variables in train_encoded but not in oot_encoded */
+PROC SQL NOPRINT;
+  CREATE TABLE train_vars AS SELECT name FROM dictionary.columns WHERE libname="WORK" AND memname="TRAIN_ENCODED";
+  CREATE TABLE oot_vars AS SELECT name FROM dictionary.columns WHERE libname="WORK" AND memname="OOT_ENCODED";
+  CREATE TABLE in_train_not_oot AS
+  SELECT * FROM train_vars
+  EXCEPT
+  SELECT * FROM oot_vars;
+QUIT;
+
+/* Print the differences */
+PROC PRINT DATA=in_train_not_oot; RUN;
+
+/* Create final train and OOT datasets */
+DATA train_encoded_final;
+  SET train_encoded (KEEP=&predictors bad);
+RUN;
+
+PROC FREQ DATA=train_encoded_final; TABLE bad; RUN;
+
+/*Create missing variables from TRAIN dataset*/
+DATA oot_encoded_final;
+  SET oot_encoded ;
+  home_ownership_ANY = 0;
+  purpose_wedding = 0;
+  KEEP &predictors bad  home_ownership_ANY purpose_wedding;
+RUN;
+
+PROC FREQ DATA=oot_encoded_final; TABLE bad; RUN;
+
+/* Split the modeling dataset by a 80/20 ratio using a random seed */
+PROC SURVEYSELECT DATA=train_encoded_final RATE=.8 OUTALL OUT=class2 SEED=42; RUN;
+
+PROC FREQ DATA= class2; TABLES selected; RUN;
+
+/* Create TRAIN and VAL datasets */
+DATA train_data val_data;
+  SET class2 ;
+  IF selected = 1 THEN OUTPUT train_data; ELSE OUTPUT val_data;
+RUN;
+
+/* Assess target rate in train, val and OOT datasets */
+PROC FREQ DATA = train_data; TABLES bad; RUN;
+PROC FREQ DATA = val_data;  TABLES bad; RUN;
+PROC FREQ DATA = oot_encoded_final;  TABLES bad; RUN; 
+ 
+/*Create hyperparameter tuning macro that will loop through a range of values for each of the tuning parameters */
+
+/* Create an empty summary_table dataset */
+PROC DELETE DATA=summary_table;
+
+DATA summary_table;
+	LENGTH Model 8;
+	FORMAT Area 8.5;
+RUN;
+
+%LET target = bad;
+
+%MACRO tune(iteration, maxtrees, maxdepth, splitsize);
+	%put "Iteration: &iteration";
+	%put "MAXTREES: &maxtrees";
+	%put "MAXDEPTH: &maxdepth";
+	%put "SPLITSIZE: &splitsize";
+
+	/* Create Random Forest with hyperparameter tuning */
+	PROC HPFOREST DATA=train_data 
+		MAXTREES = &maxtrees.
+		MAXDEPTH = &maxdepth.
+		SPLITSIZE = &splitsize.;
+		TARGET &target. /LEVEL=binary;
+		INPUT &predictors. / LEVEL=interval;
+		SAVE FILE = '/workspace/ccmod/u588348/random_forest.sas';
+	RUN;
+
+	PROC HP4SCORE DATA = val_data;
+		SCORE FILE = '/workspace/ccmod/u588348/random_forest.sas'
+		OUT = test_score_&iteration. (keep = &target. P_bad1);
+	RUN;
+
+	/* Calcuate AUC value on validation dataset */
+	proc logistic data = test_score_&iteration.;
+		class &target.;
+		model &target. = P_bad1 / outroc=ROC;
+		ROC;
+		ODS OUTPUT ROCASSOCIATION = auc_out;
+	run;
+
+	data outstat;
+		set auc_out;
+		Model = &iteration.;
+		where ROCModel = 'Model';
+		keep Model Area;
+	run;
+
+	/* Append the results to a summary table */
+	proc append base=summary_table data=outstat;
+	run;
+
+%mend;
+
+/* Call the macro with different hyperparameters */
+%tune(1, 100, 5, 2);
+%tune(2, 200, 5, 2);
+%tune(3, 300, 5, 2);
+%tune(4, 100, 10, 2);
+%tune(5, 200, 10, 2);
+%tune(6, 300, 10, 2);
+%tune(7, 100, 15, 2);
+%tune(8, 200, 15, 2);
+%tune(9, 300, 15, 2);
+%tune(10, 100, 5, 5);
+%tune(11, 200, 5, 5);
+%tune(12, 300, 5, 5);
+%tune(13, 100, 10, 5);
+%tune(14, 200, 10, 5);
+%tune(15, 300, 10, 5);
+%tune(16, 100, 15, 5);
+%tune(17, 200, 15, 5);
+%tune(18, 300, 15 ,5);
+%tune(19 ,100 ,5 ,10);
+%tune(20 ,200 ,5 ,10);
+%tune(21 ,300 ,5 ,10);
+%tune(22 ,100 ,10 ,10);
+%tune(23 ,200 ,10 ,10);
+%tune(24 ,300 ,10 ,10);
+%tune(25 ,100 ,15 ,10);
+%tune(26 ,200 ,15 ,10);
+%tune(27 ,300 ,15 ,10);
+
+PROC SORT DATA=summary_table; BY DESCENDING Area; RUN;
+
+/*Apply optimal hyperparameters to the OOT dataset for final evaluation*/
+
+/* Create Random Forest with optimal hyperparameter values */
+PROC HPFOREST DATA=train_data 
+	MAXTREES = 200 /*Input optimal hyperparameter value*/
+	MAXDEPTH = 15 /*Input optimal hyperparameter value*/
+	SPLITSIZE = 5; /*Input optimal hyperparameter value*/
+	TARGET &target. /LEVEL=binary;
+	INPUT &predictors. / LEVEL=interval;
+	SAVE FILE = '/workspace/ccmod/u588348/random_forest.sas';
+RUN;
+
+PROC HP4SCORE DATA = oot_encoded_final;
+	SCORE FILE = '/workspace/ccmod/u588348/random_forest.sas'
+	OUT = oot_scored (keep = &target. P_bad1);
+RUN;
+
+/* Calcuate AUC value on OOT dataset */
+PROC LOGISTIC DATA = oot_scored;
+  CLASS &target.;
+  MODEL &target. = P_bad1 / OUTROC=ROC;
+  ROC;
+  ODS OUTPUT ROCASSOCIATION = auc_out;
+RUN;
+
+
+
+
+###############################################################################
+
+
+/*Gradient Boosting Model Code:*/
+/* Load the data */
+DATA train_encoded;
+  SET james.train_encoded;
+RUN;
+
+DATA oot_encoded;
+  SET james.oot_encoded;
+RUN;
+
+/* Create global variable for predictors */
+PROC CONTENTS NOPRINT DATA = train_encoded (DROP= id bad) OUT = var (KEEP = name); RUN;
+PROC SQL NOPRINT; SELECT name INTO:predictors SEPARATED BY " " FROM var; QUIT;
+%PUT &predictors; RUN;
+
+/* Variables in train_encoded but not in oot_encoded */
+PROC SQL NOPRINT;
+  CREATE TABLE train_vars AS SELECT name FROM dictionary.columns WHERE libname="WORK" AND memname="TRAIN_ENCODED";
+  CREATE TABLE oot_vars AS SELECT name FROM dictionary.columns WHERE libname="WORK" AND memname="OOT_ENCODED";
+  CREATE TABLE in_train_not_oot AS
+  SELECT * FROM train_vars
+  EXCEPT
+  SELECT * FROM oot_vars;
+QUIT;
+
+/* Print the differences */
+PROC PRINT DATA=in_train_not_oot; RUN;
+
+/* Create final train and OOT datasets */
+DATA train_encoded_final;
+  SET train_encoded (KEEP=&predictors bad);
+RUN;
+
+PROC FREQ DATA=train_encoded_final; TABLE bad; RUN;
+
+/*Create missing variables from TRAIN dataset*/
+DATA oot_encoded_final;
+  SET oot_encoded ;
+  home_ownership_ANY = 0;
+  purpose_wedding = 0;
+  KEEP &predictors bad  home_ownership_ANY purpose_wedding;
+RUN;
+
+PROC FREQ DATA=oot_encoded_final; TABLE bad; RUN;
+
+/* Split the modeling dataset by a 80/20 ratio using a random seed */
+PROC SURVEYSELECT DATA=train_encoded_final RATE=.8 OUTALL OUT=class2 SEED=42; RUN;
+
+PROC FREQ DATA= class2; TABLES selected; RUN;
+
+/* Create TRAIN and VAL datasets */
+DATA train_data val_data;
+  SET class2 ;
+  IF selected = 1 THEN OUTPUT train_data; ELSE OUTPUT val_data;
+RUN;
+
+/* Assess target rate in train, val and OOT datasets */
+PROC FREQ DATA = train_data; TABLES bad; RUN;
+PROC FREQ DATA = val_data;  TABLES bad; RUN;
+PROC FREQ DATA = oot_encoded_final;  TABLES bad; RUN; 
+
+/* Balance the data by undersampling the majority class */
+PROC FREQ DATA=train_data ;
+  TABLES bad ;
+RUN;
+
+DATA pos neg;
+  SET train_data;
+  IF bad = 1 THEN OUTPUT pos; ELSE OUTPUT neg;
+RUN;
+
+DATA train_bal;
+  SET pos neg(obs=6901); /*Input the number of positive cases*/
+RUN;
+
+PROC FREQ DATA=train_bal; TABLES bad; RUN;
+
+/*Create hyperparameter tuning macro that will loop through a range of values for each of the tuning parameters */
+
+/* Create an empty summary_table dataset */
+PROC DELETE DATA=summary_table;
+
+DATA summary_table;
+	LENGTH Model 8;
+	FORMAT Area 8.5;
+RUN;
+
+%LET target = bad;
+
+%MACRO tune(iteration, maxdepth, leafsize);
+	%put "Iteration: &iteration";
+	%put "MAXDEPTH: &maxdepth";
+	%put "LEAFSIZE: &leafsize";
+
+	/* Create Gradient boosting model with hyperparameter tuning */
+	PROC TREEBOOST DATA=train_bal NOPRINT  
+		MAXDEPTH = &maxdepth.
+		LEAFSIZE = &leafsize.;
+		TARGET &target. /LEVEL=binary;
+		INPUT &predictors. / LEVEL=interval;
+		CODE FILE = '/workspace/ccmod/u588348/gradient_boosting.sas';
+	RUN;
+
+	DATA test_score_&iteration.;
+	  SET val_data;
+	  %INCLUDE '/workspace/ccmod/u588348/gradient_boosting.sas';
+	  KEEP id &target. P_bad1;
+	RUN;
+
+	/* Calcuate AUC value on validation dataset */
+	proc logistic data = test_score_&iteration.;
+		class &target.;
+		model &target. = P_bad1 / outroc=ROC;
+		ROC;
+		ODS OUTPUT ROCASSOCIATION = auc_out;
+	run;
+
+	data outstat;
+		set auc_out;
+		Model = &iteration.;
+		where ROCModel = 'Model';
+		keep Model Area;
+	run;
+
+	/* Append the results to a summary table */
+	proc append base=summary_table data=outstat;
+	run;
+
+%mend;
+
+/* Call the macro with different hyperparameters */
+%tune(1, 5, 2);
+%tune(2, 5, 5);
+%tune(3, 10, 2);
+%tune(4, 10, 5);
+%tune(5, 15, 2);
+%tune(6, 15, 5);
+
+PROC SORT DATA=summary_table; BY DESCENDING Area; RUN;
+
+************************************************************************;
+/*Apply optimal hyperparameters to the OOT dataset for final evaluation*/
+************************************************************************;
+
+PROC TREEBOOST DATA=train_bal   
+	MAXDEPTH = 5 /*Input optimal hyperparameter value*/
+	LEAFSIZE = 5; /*Input optimal hyperparameter value*/
+	TARGET bad /LEVEL=binary;
+	INPUT &predictors. / LEVEL=interval;
+	CODE FILE = '/workspace/ccmod/u588348/gradient_boosting.sas';
+RUN;
+
+DATA oot_score;
+	SET oot_encoded_final;
+	%INCLUDE '/workspace/ccmod/u588348/gradient_boosting.sas';
+	KEEP id bad P_bad1;
+RUN;
+
+/* Calcuate AUC value on validation dataset */
+PROC LOGISTIC DATA = oot_score;
+  CLASS bad;
+  MODEL bad = P_bad1 / OUTROC=ROC;
+  ROC;
+  ODS OUTPUT ROCASSOCIATION = auc_out;
+RUN;
