@@ -1,1 +1,180 @@
 
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import roc_curve, auc, confusion_matrix
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import precision_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import f1_score
+import matplotlib.pyplot as plt
+
+# Load the data and split into developmental and OOT datasets
+#loan_data = pd.read_csv('loan_data.csv')
+oot_start_date = '2017-04-01'
+oot_end_date = '2017-06-30'
+mask = (loan_data['issue_d'] >= oot_start_date) & (loan_data['issue_d'] <= oot_end_date)
+X_oot = loan_data[mask].drop('bad', axis=1)
+y_oot = loan_data[mask]['bad']
+X_dev = loan_data[~mask].drop('bad', axis=1)
+y_dev = loan_data[~mask]['bad']
+
+# Identify numeric and categorical features
+numeric_features = ['loan_amnt', 'int_rate', 'annual_inc', 'dti', 'open_acc', 'pub_rec', 'revol_bal', 'revol_util', 'total_acc', 'mort_acc', 'pub_rec_bankruptcies']
+categorical_features = ['emp_length', 'term', 'grade', 'sub_grade', 'home_ownership', 'verification_status', 'purpose', 'application_type']
+
+# Perform data imputations on developmental dataset
+
+# Missing value imputation using median for numeric features and most frequent for categorical features
+imp_median = SimpleImputer(strategy='median')
+imp_most_frequent = SimpleImputer(strategy='most_frequent')
+X_dev[numeric_features] = imp_median.fit_transform(X_dev[numeric_features])
+X_dev[categorical_features] = imp_most_frequent.fit_transform(X_dev[categorical_features])
+
+# Winsorization of outliers at 5% and 95% thresholds for numeric features only
+for col in numeric_features:
+    lower, upper = np.percentile(X_dev[col], [5, 95])
+    X_dev[col] = np.where(X_dev[col] < lower, lower, X_dev[col])
+    X_dev[col] = np.where(X_dev[col] > upper, upper, X_dev[col])
+
+# Apply one-hot encoding to categorical features
+encoder = OneHotEncoder(handle_unknown='ignore')
+X_cat_encoded = encoder.fit_transform(X_dev[categorical_features])
+X_dev_encoded = pd.concat([X_dev[numeric_features], pd.DataFrame(X_cat_encoded.toarray(), index=X_dev.index)], axis=1)
+
+# Feature engineering: create interaction variable between dti and annual_inc
+X_dev_encoded['DTI_INC_interaction'] = X_dev['dti'] * X_dev['annual_inc']
+
+# Split developmental dataset into development and validation datasets (80/20 ratio)
+X_train, X_val, y_train, y_val = train_test_split(X_dev_encoded, y_dev, test_size=0.2)
+
+# Make sure that the target variable is numeric
+y_val = y_val.astype(int)
+y_train = y_train.astype(int)
+
+# Develop machine learning models on development dataset
+models = {
+    'Logistic Regression': LogisticRegression(),
+    'Decision Tree': DecisionTreeClassifier(),
+    'Random Forest': RandomForestClassifier(),
+    'Support Vector Machine': SVC(probability=True),
+    'Gradient Boosting Machine': GradientBoostingClassifier(),
+    'Neural Network': MLPClassifier()
+}
+auc_scores = {}
+for name, model in models.items():
+    model.fit(X_train, y_train)
+    y_pred_proba = model.predict_proba(X_val)[:, 1]
+    fpr, tpr, _ = roc_curve(y_val, y_pred_proba)
+    roc_auc = auc(fpr, tpr)
+    auc_scores[name] = roc_auc
+
+# Plot AUC for each model
+plt.bar(range(len(auc_scores)), list(auc_scores.values()), align='center')
+plt.xticks(range(len(auc_scores)), list(auc_scores.keys()), rotation=45)
+plt.ylabel('AUC')
+plt.show()
+
+# Select champion model based on highest AUC on validation dataset
+champion_model_name = max(auc_scores, key=auc_scores.get)
+champion_model = models[champion_model_name]
+print(f'Champion model: {champion_model_name}')
+
+# Tune hyperparameters of champion model using grid search
+from sklearn.model_selection import GridSearchCV
+param_grid = {
+    'n_estimators': [10, 50, 100],
+    'max_depth': [None, 10, 20],
+    'min_samples_split': [2, 5],
+    'min_samples_leaf': [1, 2]
+}
+grid_search = GridSearchCV(champion_model, param_grid=param_grid)
+grid_search.fit(X_train, y_train)
+champion_model_tuned = grid_search.best_estimator_
+
+# Apply champion model to OOT dataset and calculate performance statistics
+X_oot_encoded = pd.concat([X_oot[numeric_features], pd.DataFrame(encoder.transform(X_oot[categorical_features]).toarray(), index=X_oot.index)], axis=1)
+X_oot_encoded['DTI_INC_interaction'] = X_oot['dti'] * X_oot['annual_inc']
+y_oot_pred_proba = champion_model_tuned.predict_proba(X_oot_encoded)[:, 1]
+fpr_oot, tpr_oot, _ = roc_curve(y_oot, y_oot_pred_proba)
+roc_auc_oot = auc(fpr_oot, tpr_oot)
+print(f'OOT AUC: {roc_auc_oot:.3f}')
+y_oot_pred = champion_model_tuned.predict(X_oot_encoded)
+cm = confusion_matrix(y_oot, y_oot_pred)
+print(f'OOT Confusion Matrix:\n{cm}')
+
+# Create a table with performance metrics for each ML model
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# Make sure that the target variable is numeric
+y_oot = y_oot.astype(int)
+
+# Impute missing values in numeric features of OOT dataset
+X_oot[numeric_features] = imp_median.transform(X_oot[numeric_features])
+
+# Winsorization of outliers at 5% and 95% thresholds for numeric features only
+for col in numeric_features:
+    lower, upper = np.percentile(X_dev[col], [5, 95])
+    X_oot[col] = np.where(X_oot[col] < lower, lower, X_oot[col])
+    X_oot[col] = np.where(X_oot[col] > upper, upper, X_oot[col])
+
+# Apply one-hot encoding to categorical features
+X_oot_encoded = pd.concat([X_oot[numeric_features], pd.DataFrame(encoder.transform(X_oot[categorical_features]).toarray(), index=X_oot.index)], axis=1)
+X_oot_encoded['DTI_INC_interaction'] = X_oot['dti'] * X_oot['annual_inc']
+
+# Impute missing values in categorical features of OOT dataset
+X_oot[categorical_features] = imp_most_frequent.transform(X_oot[categorical_features])
+
+# Create a DataFrame to store performance statistics for each model
+performance_df = pd.DataFrame(columns=['Model', 'AUC', 'Accuracy', 'Precision', 'Recall', 'F1 Score'])
+
+# Calculate AUC for champion model on OOT dataset
+y_oot_pred_proba = champion_model_tuned.predict_proba(X_oot_encoded)[:, 1]
+fpr_oot, tpr_oot, _ = roc_curve(y_oot, y_oot_pred_proba)
+roc_auc_oot = auc(fpr_oot, tpr_oot)
+
+# Calculate performance statistics for each model
+for name, model in models.items():
+    y_pred = model.predict(X_val)
+    accuracy = accuracy_score(y_val, y_pred)
+    if np.sum(y_pred) == 0:
+        precision = 0
+        f1 = 0
+    else:
+        precision = precision_score(y_val, y_pred)
+        f1 = f1_score(y_val, y_pred)
+    recall = recall_score(y_val, y_pred)
+    performance_df = performance_df.append({'Model': name, 'AUC': auc_scores[name], 'Accuracy': accuracy, 'Precision': precision, 'Recall': recall, 'F1 Score': f1}, ignore_index=True)
+
+# Check if champion_model_tuned is defined
+if 'champion_model_tuned' not in globals():
+    champion_model_tuned = champion_model
+
+# Preprocess OOT dataset before applying champion model to it
+X_oot_encoded = pd.concat([X_oot[numeric_features], pd.DataFrame(encoder.transform(X_oot[categorical_features]).toarray(), index=X_oot.index)], axis=1)
+X_oot_encoded['DTI_INC_interaction'] = X_oot['dti'] * X_oot['annual_inc']
+
+# Calculate performance statistics for champion model on OOT dataset
+y_oot_pred = champion_model_tuned.predict(X_oot_encoded)
+accuracy_oot = accuracy_score(y_oot, y_oot_pred)
+if np.sum(y_oot_pred) == 0:
+    precision_oot = 0
+    f1_oot = 0
+else:
+    precision_oot = precision_score(y_oot, y_oot_pred)
+    f1_oot = f1_score(y_oot, y_oot_pred)
+recall_oot = recall_score(y_oot, y_oot_pred)
+performance_df = performance_df.append({'Model': f'{champion_model_name} (OOT)', 'AUC': roc_auc_oot, 'Accuracy': accuracy_oot, 'Precision': precision_oot, 'Recall': recall_oot, 'F1 Score': f1_oot}, ignore_index=True)
+
+# Display the performance table
+display(performance_df)
