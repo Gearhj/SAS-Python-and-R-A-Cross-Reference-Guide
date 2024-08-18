@@ -1,1 +1,19 @@
 
+#Import data into python enviornment:
+import pandas as pd
+
+# Specify the columns you want to read
+cols = ['id', 'loan_status', 'loan_amnt', 'term', 'int_rate', 'grade', 'sub_grade', 'emp_length', 'home_ownership', 'annual_inc', 'verification_status', 'issue_d', 'purpose' ,'dti', 'earliest_cr_line', 'open_acc', 'pub_rec', 'revol_bal', 'revol_util', 'total_acc', 'application_type', 'mort_acc', 'pub_rec_bankruptcies']
+
+# Read specific columns of the CSV file using Pandas
+loan = pd.read_csv(r'/...INPUT YOUR FILE PATHWAY.../accepted_2007_to_2018Q4.csv', usecols=cols)
+
+
+#########################################################
+
+
+#Simple random sample with seed valu:
+loan_samp = loan.sample(n=100000, replace=False, random_state=42)
+
+
+
