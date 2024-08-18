@@ -1,1 +1,19 @@
 
+#Import data into R environment:
+
+library(data.table)
+
+# Read in the entire dataset
+loan <- fread("/...INPUT YOUR FILE PATHWAY.../accepted_2007_to_2018Q4.csv")
+
+# Select specific columns
+loan <- loan[, .(id, loan_status, loan_amnt, term, int_rate, grade, sub_grade, emp_length, home_ownership, annual_inc, verification_status, issue_d, purpose, dti, earliest_cr_line, open_acc, pub_rec, revol_bal, revol_util, total_acc, application_type, mort_acc, pub_rec_bankruptcies)]
+
+
+###################################################
+
+
+#Create simple random sample:
+set.seed(42)
+loan_samp <- loan[sample(nrow(loan), size=100000)]
+
