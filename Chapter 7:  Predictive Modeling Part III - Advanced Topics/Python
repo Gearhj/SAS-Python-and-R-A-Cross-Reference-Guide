@@ -1,1 +1,235 @@
 
+#Support Vector Machine Code:
+# Import necessary libraries
+import pandas as pd
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.svm import SVC
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
+from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
+
+# Function to calculate performance metrics
+def performance_metrics(y_true, y_pred):
+    print("Classification Report:")
+    print(classification_report(y_true, y_pred))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_true, y_pred))
+    print("ROC AUC Score:")
+    print(roc_auc_score(y_true, y_pred))
+
+# Load the data
+train_encoded = pd.read_csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv')
+OOT_encoded = pd.read_csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv')
+
+print(train_encoded.columns)
+
+# Define predictors and the target variable
+predictors = [col for col in train_encoded.columns if col != 'bad']
+
+# Check if excluded variables are in OOT_encoded columns, if not then add them
+missing_cols = set(predictors) - set(OOT_encoded.columns)
+for c in missing_cols:
+    OOT_encoded[c] = 0
+
+# Split the data into training and validation sets (80/20 split) using stratified sampling
+X_train, X_val, y_train, y_val = train_test_split(train_encoded[predictors], train_encoded['bad'], test_size=0.2, random_state=42, stratify=train_encoded['bad'])
+
+# Combine predictors and target variable into one DataFrame for undersampling
+train_data = pd.concat([X_train, y_train], axis=1)
+
+# Count the number of samples in the minority class
+minority_class_count = train_data['bad'].value_counts().min()
+
+# Perform undersampling on the majority class
+undersampled_data = pd.concat([train_data[train_data['bad'] == label].sample(minority_class_count, random_state=42) for label in train_data['bad'].unique()])
+
+# Get the resampled predictors and target variable
+X_train_resampled = undersampled_data[predictors]
+y_train_resampled = undersampled_data['bad']
+
+# Standardize the data
+scaler = StandardScaler()
+X_train_resampled = scaler.fit_transform(X_train_resampled)
+OOT_encoded[predictors] = scaler.transform(OOT_encoded[predictors])
+
+# Build the SVM model
+svm = SVC(random_state=42)
+
+# Define hyperparameters to tune
+param_grid = {'C': [0.1, 1, 10],
+              'kernel': ['linear', 'rbf', 'poly']}
+
+# Tune hyperparameters using GridSearchCV
+grid_search = GridSearchCV(svm, param_grid, cv=5)
+grid_search.fit(X_train_resampled, y_train_resampled)
+
+# Get the best model
+best_model = grid_search.best_estimator_
+
+# Apply the model to the OOT dataset
+OOT_predictions = best_model.predict(OOT_encoded[predictors])
+
+# Create performance metrics using the function defined earlier
+performance_metrics(OOT_encoded['bad'], OOT_predictions)
+
+# Plot ROC curve
+fpr, tpr, _ = roc_curve(OOT_encoded['bad'], OOT_predictions)
+plt.figure(figsize=(10, 8))
+plt.plot(fpr, tpr)
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.show()
+
+
+##########################################################################################
+
+
+
+#Neural Network Code:
+# Import necessary libraries 
+import pandas as pd 
+import numpy as np 
+import matplotlib.pyplot as plt 
+from sklearn.model_selection import train_test_split 
+from sklearn.preprocessing import StandardScaler 
+from sklearn.neural_network import MLPClassifier 
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve 
+from sklearn.model_selection import GridSearchCV 
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+import statsmodels.api as sm
+
+# Function to calculate performance metrics
+def performance_metrics(y_true, y_pred):
+    print("Classification Report:")
+    print(classification_report(y_true, y_pred))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_true, y_pred))
+    print("ROC AUC Score:")
+    print(roc_auc_score(y_true, y_pred))
+
+# Load the data
+train_encoded = pd.read_csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv')
+OOT_encoded = pd.read_csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv')
+
+print(train_encoded.columns)
+
+# Define the variables to exclude
+excluded_variables = ['id', 'emp_length_3years', 'term_36months', 'grade_G', 'sub_grade_B4', 'verification_status_SourceVerifi', 'purpose_home_improvement',                       'home_ownership_RENT', 'application_type_JointApp', 'bad']
+
+# Define predictors excluding the specified variables and the target variable
+predictors = [col for col in train_encoded.columns if col not in excluded_variables]
+
+# Calculate VIF
+X = sm.add_constant(train_encoded[predictors])
+vif = pd.DataFrame()
+vif["VIF Factor"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+vif["features"] = X.columns
+
+# Identify variables with VIF greater than 5 (indicative of multicollinearity)
+high_vif_predictors = vif[vif["VIF Factor"] > 5]["features"].tolist()
+
+# Remove predictors with high VIF from the list of predictors
+predictors = [pred for pred in predictors if pred not in high_vif_predictors]
+
+# Store the target variable temporarily
+OOT_bad = OOT_encoded['bad']
+
+# Check if excluded variables are in OOT_encoded columns, if not then add them
+missing_cols = set(predictors) - set(OOT_encoded.columns)
+for c in missing_cols:
+    OOT_encoded[c] = 0
+
+# Ensure the order of column in the OOT set is the same order than in train set
+OOT_encoded = OOT_encoded[predictors]
+
+# Add back the target variable 'bad' to the OOT_encoded dataset
+OOT_encoded['bad'] = OOT_bad
+
+# Split the data into training and validation sets (80/20 split) using stratified sampling
+X_train, X_val, y_train, y_val = train_test_split(train_encoded[predictors], train_encoded['bad'], test_size=0.2, random_state=42, stratify=train_encoded['bad'])
+
+# Remove constant columns
+X_train = X_train.loc[:, (X_train != X_train.iloc[0]).any()]
+
+# Remove duplicate columns
+X_train = X_train.loc[:,~X_train.columns.duplicated()]
+
+# Combine predictors and target variable into one DataFrame for undersampling
+train_data = pd.concat([X_train, y_train], axis=1)
+
+# Count the number of samples in the minority class
+minority_class_count = train_data['bad'].value_counts().min()
+
+# Perform undersampling on the majority class
+undersampled_data = pd.concat([train_data[train_data['bad'] == label].sample(minority_class_count, random_state=42) for label in train_data['bad'].unique()])
+
+# Get the resampled predictors and target variable
+X_train_resampled = undersampled_data[predictors]
+y_train_resampled = undersampled_data['bad']
+
+# Perform undersampling on the majority class for validation dataset 
+validation_data = pd.concat([X_val, y_val], axis=1) 
+minority_class_count = validation_data['bad'].value_counts().min() 
+undersampled_validation_data = pd.concat([validation_data[validation_data['bad'] == label].sample(minority_class_count, random_state=42) for label in validation_data['bad'].unique()]) 
+X_val_resampled = undersampled_validation_data[predictors] 
+y_val_resampled = undersampled_validation_data['bad'] 
+
+# Standardize the data 
+scaler = StandardScaler() 
+X_train = scaler.fit_transform(X_train_resampled) 
+X_val = scaler.transform(X_val_resampled) 
+
+# Build the neural network model 
+model = MLPClassifier(random_state=42) 
+
+# Define hyperparameters to tune 
+param_grid = { 'hidden_layer_sizes': [(64, 32), (128, 64, 32)], 
+               'activation': ['relu', 'tanh'], 
+               'solver': ['adam', 'lbfgs'], 
+               'alpha': [0.0001, 0.001, 0.01], 
+               'max_iter': [10, 50, 100] } 
+
+# Create GridSearchCV 
+grid_search = GridSearchCV(model, param_grid, cv=5) 
+
+# Train the model 
+grid_search.fit(X_train, y_train_resampled) 
+
+# Get the best model 
+best_model = grid_search.best_estimator_ 
+
+# Separate predictors and target variable 
+OOT_X = OOT_encoded.drop('bad', axis=1) 
+OOT_y = OOT_encoded['bad'] 
+
+# Standardize the OOT data 
+OOT_X = scaler.transform(OOT_X) 
+
+# Apply the model to the OOT dataset 
+OOT_predictions = best_model.predict(OOT_X) 
+
+# Create performance metrics using the function defined earlier 
+performance_metrics(OOT_y, OOT_predictions) 
+
+# Plot ROC curve 
+fpr, tpr, _ = roc_curve(OOT_y, OOT_predictions) 
+plt.figure(figsize=(10, 8)) 
+plt.plot(fpr, tpr) 
+plt.plot([0, 1], [0, 1], 'k--') 
+plt.xlabel('False Positive Rate') 
+plt.ylabel('True Positive Rate') 
+plt.title('ROC Curve') 
+plt.show() 
+
+# Print the best hyperparameters 
+print("Best Hyperparameters:") 
+print(grid_search.best_params_)
+
+
+
+
+
+
+
