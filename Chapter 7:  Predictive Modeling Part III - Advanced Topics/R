@@ -1,1 +1,199 @@
 
+#Support Vector Machine Code:
+# Import necessary libraries
+library(e1071)
+library(caret)
+library(pROC)
+
+# Function to calculate performance metrics
+performance_metrics <- function(y_true, y_pred) {
+  print("Classification Report:")
+  print(confusionMatrix(as.factor(y_pred), as.factor(y_true)))
+  print("ROC AUC Score:")
+  roc_obj <- roc(y_true, y_pred)
+  print(auc(roc_obj))
+  return(roc_obj)
+}
+
+# Load the data
+train_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv')
+OOT_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv')
+
+print(colnames(train_encoded))
+
+# Define predictors and the target variable
+predictors <- colnames(train_encoded)[!colnames(train_encoded) %in% 'bad']
+
+# Check if excluded variables are in OOT_encoded columns, if not then add them
+missing_cols <- setdiff(predictors, colnames(OOT_encoded))
+OOT_encoded[missing_cols] <- 0
+
+# Split the data into training and validation sets (80/20 split) using stratified sampling
+train_index <- createDataPartition(train_encoded$bad, p = 0.8, list = FALSE)
+X_train <- train_encoded[train_index, predictors]
+y_train <- train_encoded[train_index, 'bad']
+X_val <- train_encoded[-train_index, predictors]
+y_val <- train_encoded[-train_index, 'bad']
+
+# Combine predictors and target variable into one DataFrame for undersampling
+train_data <- cbind(X_train, bad = y_train)
+
+# Count the number of samples in the minority class
+minority_class_count <- min(table(train_data$bad))
+
+# Perform undersampling on the majority class
+undersampled_data <- train_data[train_data$bad == 0, ][sample(1:nrow(train_data[train_data$bad == 0, ]), minority_class_count), ]
+undersampled_data <- rbind(undersampled_data, train_data[train_data$bad == 1, ][sample(1:nrow(train_data[train_data$bad == 1, ]), minority_class_count), ])
+
+# Get the resampled predictors and target variable
+X_train_resampled <- undersampled_data[, predictors]
+y_train_resampled <- undersampled_data$bad
+
+# Standardize the data
+preProcValues <- preProcess(X_train_resampled, method = c("center", "scale"))
+X_train_resampled <- predict(preProcValues, X_train_resampled)
+OOT_encoded[predictors] <- predict(preProcValues, OOT_encoded[predictors])
+
+# Define the SVM model
+svm_model <- svm
+
+# Define the tuning grid
+tune_grid <- expand.grid(C = c(0.1, 1, 10),
+                         kernel = c('linear', 'radial', 'polynomial'))
+
+# Perform hyperparameter tuning
+tuned_model <- tune(svm_model, bad ~ ., data = cbind(X_train_resampled, bad = y_train_resampled), ranges = tune_grid)
+
+# Get the best model
+best_model <- tuned_model$best.model
+
+# Apply the best model to the OOT dataset
+OOT_predictions <- predict(best_model, OOT_encoded[predictors])
+
+# Create performance metrics using the function defined earlier
+roc_obj <- performance_metrics(OOT_encoded$bad, OOT_predictions)
+
+# Plot ROC curve
+roc_obj <- roc(OOT_encoded$bad, OOT_predictions)
+plot(roc_obj, print.thres = "best")
+
+
+
+
+##########################################################################################
+
+
+
+#Neural Network Code:
+# Load necessary libraries 
+library(caret) 
+library(ROCR) 
+library(nnet) 
+library(MLmetrics) 
+library(ROSE) 
+library(pROC)
+
+# Load the data 
+train_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv') 
+OOT_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv') 
+
+# Define the variables to exclude 
+excluded_variables <- c('id', 'emp_length_3years', 'term_36months', 'grade_G', 'sub_grade_B4', 
+                        'verification_status_SourceVerifi', 'purpose_home_improvement', 'home_ownership_RENT', 
+                        'application_type_JointApp') 
+
+# Define predictors excluding the specified variables and the target variable 
+predictors <- setdiff(colnames(train_encoded), c(excluded_variables, "bad")) 
+
+# Calculate VIF
+vif_fit <- lm(bad ~ ., data = train_encoded[, c(predictors, "bad")])
+if (vif_fit$rank == length(coefficients(vif_fit))) {
+  vif_values <- car::vif(vif_fit)
+  high_vif_predictors <- names(vif_values[vif_values > 5])  # Change this threshold as needed
+} else {
+  high_vif_predictors <- character(0)
+}
+
+# Remove predictors with high VIF from the list of predictors 
+predictors <- setdiff(predictors, high_vif_predictors) 
+
+# Perform undersampling on the majority class 
+minority_class_count <- min(table(train_encoded$bad)) 
+undersampled_data <- train_encoded[train_encoded$bad == 0, ] 
+undersampled_data <- rbind(undersampled_data, train_encoded[train_encoded$bad == 1, ][sample(minority_class_count), ]) 
+
+# Split the data into training and validation sets (80/20 split) using stratified sampling 
+trainIndex <- createDataPartition(undersampled_data$bad, p = .8, list = FALSE) 
+X_train <- train_encoded[trainIndex, predictors] 
+y_train <- train_encoded[trainIndex, "bad"] 
+X_val <- train_encoded[-trainIndex, predictors] 
+y_val <- train_encoded[-trainIndex, "bad"] 
+
+# Check if predictors are in OOT_encoded columns, if not then add them
+missing_cols <- setdiff(predictors, colnames(OOT_encoded))
+for (c in missing_cols) {
+  OOT_encoded[[c]] <- 0
+}
+
+# Ensure the order of columns in the OOT set is the same as in the train set 
+OOT_encoded <- OOT_encoded[c(predictors, "bad")] 
+
+# Standardize the data 
+scaler <- preProcess(X_train[, predictors], method = c("center", "scale")) 
+X_train[, predictors] <- predict(scaler, X_train[, predictors]) 
+X_val[, predictors] <- predict(scaler, X_val[, predictors]) 
+OOT_encoded[, predictors] <- predict(scaler, OOT_encoded[, predictors]) 
+
+#Combine target and predictors
+X_train$bad <- y_train
+
+# Define the neural network model with reduced complexity 
+model <- nnet(bad ~ ., data = X_train, size = 10, linout = TRUE, family = binomial, decay = 0.01, maxit = 100, trace = FALSE) 
+
+# Predict on the validation dataset 
+validation_preds <- predict(model, newdata = X_val) 
+validation_preds <- ifelse(validation_preds > 0.5, 1, 0) 
+
+# Ensure that validation_preds and y_val have the same length 
+if (length(validation_preds) != length(y_val)) { 
+  stop("Dimensions of validation_preds and y_val do not match.") 
+} 
+
+y_val <-as.factor(y_val)
+
+# Calculate performance metrics for validation 
+confusion_matrix <- confusionMatrix(validation_preds, y_val) 
+roc_auc <- roc.area(ROCR::prediction(validation_preds, y_val)) 
+
+# Print performance metrics 
+print("Validation Performance Metrics:") 
+print(confusion_matrix) 
+print(paste("ROC AUC:", roc_auc)) 
+
+# Hyperparameter tuning using grid search 
+param_grid <- expand.grid(size  = c(5, 10), 
+                          decay = c(0.001, 0.01, 0.1), 
+                          maxit = c(50, 100)) 
+
+set.seed(42) 
+tuned_model <- train( bad ~ ., data = X_train[X_train$bad %in% c(0, 1), ], 
+                      method = "nnet", 
+                      tuneGrid = param_grid, 
+                      trControl = trainControl(method = "cv", number = 5) 
+) 
+
+# Get the best model 
+best_model <- tuned_model$finalModel 
+
+# Predict on the OOT dataset 
+OOT_preds <- predict(best_model, newdata = OOT_encoded) 
+OOT_preds <- ifelse(OOT_preds > 0.5, 1, 0) 
+
+# Calculate performance metrics for OOT dataset 
+confusion_matrix_OOT <- confusionMatrix(OOT_preds, OOT_encoded$bad) 
+roc_auc_OOT <- roc.area(ROCR::prediction(OOT_preds, OOT_encoded$bad)) 
+
+# Print performance metrics for OOT dataset 
+print("OOT Performance Metrics:") 
+print(confusion_matrix_OOT) 
+print(paste("ROC AUC (OOT):", roc_auc_OOT))
