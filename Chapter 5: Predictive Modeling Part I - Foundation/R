@@ -1,1 +1,189 @@
 
+
+#Logistic Regression 
+# Load necessary libraries
+library(caret)
+library(glmnet)
+library(car)
+library(pROC)
+
+# Load the data
+train_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv')
+OOT_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv')
+
+train_encoded.columns
+
+# Define the variables to exclude
+excluded_variables <- c('id', 'emp_length_3years', 'term_36months', 'grade_G', 'sub_grade_B4', 
+                        'verification_status_SourceVerifi', 'purpose_home_improvement', 
+                        'home_ownership_RENT', 'application_type_JointApp')
+
+# Define predictors excluding the specified variables and the target variable
+predictors <- setdiff(colnames(train_encoded), c(excluded_variables, "bad"))
+
+# Calculate VIF
+vif_fit <- lm(bad ~ ., data = train_encoded[, c(predictors, "bad")])
+if (vif_fit$rank == length(coefficients(vif_fit))) {
+  vif_values <- car::vif(vif_fit)
+  high_vif_predictors <- names(vif_values[vif_values > 5])  # Change this threshold as needed
+} else {
+  high_vif_predictors <- character(0)
+}
+
+# Remove predictors with high VIF from the list of predictors
+predictors <- setdiff(predictors, high_vif_predictors)
+
+# Split the data into training and validation sets (80/20 split) using stratified sampling
+trainIndex <- createDataPartition(train_encoded$bad, p = .8, list = FALSE)
+X_train <- train_encoded[trainIndex, predictors]
+y_train <- train_encoded[trainIndex, "bad"]
+X_val <- train_encoded[-trainIndex, predictors]
+y_val <- train_encoded[-trainIndex, "bad"]
+
+# Perform undersampling on the majority class
+minority_class_count <- min(table(train_encoded$bad))
+undersampled_data <- train_encoded[train_encoded$bad == 0, ]
+undersampled_data <- rbind(undersampled_data, train_encoded[train_encoded$bad == 1, ][sample(minority_class_count), ])
+
+# Get the resampled predictors and target variable
+X_train_resampled <- undersampled_data[, predictors]
+y_train_resampled <- undersampled_data[, "bad"]
+
+
+# Check if predictors are in OOT_encoded columns, if not then add them
+missing_cols <- setdiff(predictors, colnames(OOT_encoded))
+for (c in missing_cols) {
+  OOT_encoded[[c]] <- 0
+}
+
+# Ensure the order of column in the OOT set is the same order than in train set
+OOT_encoded <- OOT_encoded[c(predictors, "bad")]
+
+# Apply the model to the OOT dataset
+OOT_X <- OOT_encoded[, predictors]
+OOT_y <- OOT_encoded[, "bad"]
+OOT_predictions_prob <- predict(best_model, newx = as.matrix(OOT_X), type = "response")
+OOT_predictions_classes <- ifelse(OOT_predictions_prob > 0.5, 1, 0)
+
+# Build the Lasso regression model
+cvfit <- cv.glmnet(as.matrix(X_train_resampled), y_train_resampled, family = "binomial", alpha = 1)
+
+# Get the best model
+best_lambda <- cvfit$lambda.min
+best_model <- glmnet(as.matrix(X_train_resampled), y_train_resampled, family = "binomial", alpha = 1, lambda = best_lambda)
+
+# Apply the model to the OOT dataset
+OOT_X <- OOT_encoded[, predictors]
+OOT_y <- OOT_encoded[, "bad"]
+OOT_predictions_prob <- predict(best_model, newx = as.matrix(OOT_X), type = "response")
+OOT_predictions_classes <- ifelse(OOT_predictions_prob > 0.5, 1, 0)
+
+# Output parameter estimates
+print(coef(best_model))
+
+# Ensure OOT_predictions_classes is a factor with levels matching OOT_y
+OOT_predictions_classes <- factor(OOT_predictions_classes, levels = levels(OOT_y))
+
+# Ensure OOT_predictions_classes and OOT_y are factors with the same levels
+OOT_predictions_classes <- factor(OOT_predictions_classes, levels = c(0, 1))
+OOT_y <- factor(OOT_y, levels = c(0, 1))
+
+# Calculate predicted probabilities
+OOT_predictions_prob <- predict(best_model, newx = as.matrix(OOT_X), type = "response")
+
+# Ensure OOT_predictions_prob is numeric
+OOT_predictions_prob <- as.numeric(OOT_predictions_prob)
+
+# Plot ROC curve
+roc_obj <- roc(OOT_y ~ OOT_predictions_prob)
+plot(roc_obj)
+
+# Calculate sensitivity and specificity for each threshold
+roc_obj <- roc(OOT_y ~ OOT_predictions_prob)
+sensitivities <- roc_obj$sensitivities
+specificities <- roc_obj$specificities
+thresholds <- roc_obj$thresholds
+
+# Calculate Youden's J statistic for each threshold
+J <- sensitivities + specificities - 1
+
+# Find the optimal threshold
+optimal_threshold <- thresholds[which.max(J)]
+
+# Convert probabilities to class predictions using the optimal threshold
+OOT_predictions_classes <- ifelse(OOT_predictions_prob > optimal_threshold, 1, 0)
+
+# Convert to factors and ensure they have the same levels
+OOT_predictions_classes <- factor(OOT_predictions_classes, levels = c(0, 1))
+OOT_y <- factor(OOT_y, levels = c(0, 1))
+
+# Print confusion matrix
+print(confusionMatrix(OOT_predictions_classes, OOT_y))
+
+
+
+#####################################################################################
+
+
+#Decision Tree Code:
+# Import necessary libraries
+library(rpart)
+library(caret)
+library(pROC)
+
+# Load the data
+train_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv')
+OOT_encoded <- read.csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv')
+
+# Define the variables to exclude
+excluded_variables <- c('id', 'bad', 'emp_length_3years', 'term_36months', 'grade_G', 'sub_grade_B4', 
+                        'verification_status_SourceVerifi', 'purpose_home_improvement', 
+                        'home_ownership_RENT', 'application_type_JointApp')
+
+# Define predictors excluding the specified variables
+predictors <- setdiff(colnames(train_encoded), excluded_variables)
+
+# Check if predictors are in OOT_encoded columns, if not then add them
+missing_cols <- setdiff(predictors, colnames(OOT_encoded))
+for (c in missing_cols) {
+  OOT_encoded[[c]] <- 0
+}
+
+# Ensure the order of column in the OOT set is in the same order than in train set
+OOT_encoded <- OOT_encoded[predictors]
+
+# Add back the target variable 'bad' to the OOT_encoded dataset
+OOT_encoded$bad <- OOT_bad
+
+# Perform undersampling on the majority class
+minority_class_count <- min(table(train_encoded$bad))
+majority_class_samples <- train_encoded[train_encoded$bad == 0, ][sample(minority_class_count), ]
+minority_class_samples <- train_encoded[train_encoded$bad == 1, ]
+undersampled_data <- rbind(majority_class_samples, minority_class_samples)
+
+# Get the resampled predictors and target variable
+X_train_resampled <- undersampled_data[, predictors]
+y_train_resampled <- undersampled_data[, "bad"]
+
+# Check the frequency of each class in the resampled data
+freq <- table(undersampled_data$bad)
+print(freq)
+
+# Build the Decision Tree model using rpart (recursive partitioning for regression)
+fitControl <- trainControl(method = "cv", number = 5)
+grid <- expand.grid(.cp = seq(0.01, 0.5, 0.01))  # complexity parameter for rpart corresponds to ccp_alpha in sklearn's DecisionTreeClassifier
+dtree_grid_search <- train(x = X_train_resampled, y = as.factor(y_train_resampled), method = "rpart", trControl = fitControl, tuneGrid = grid)
+
+# Get the best model
+best_model <- dtree_grid_search$finalModel
+
+# Apply the model to the OOT dataset
+OOT_predictions <- predict(best_model, newdata = OOT_encoded[, predictors], type = "class")
+
+# Create performance metrics using caret's confusionMatrix function
+print(confusionMatrix(as.factor(OOT_predictions), as.factor(OOT_encoded$bad)))
+
+# Plot ROC curve using pROC package
+roc_obj <- roc(OOT_encoded$bad, as.numeric(as.character(OOT_predictions)))
+plot(roc_obj, main="ROC Curve")
+abline(a=0, b=1)
