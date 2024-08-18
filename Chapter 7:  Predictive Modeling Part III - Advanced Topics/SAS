@@ -1,1 +1,354 @@
 
+/*Support Vector Machine Code:*/
+/*LIBNAME james 'INPUT FILE PATHWAY';*/
+
+/* Load the data */
+DATA train_encoded;
+  SET james.train_encoded;
+RUN;
+
+DATA oot_encoded;
+  SET james.oot_encoded;
+RUN;
+
+/* Create global variable for predictors */
+PROC CONTENTS NOPRINT DATA = train_encoded (DROP= id bad) OUT = var (KEEP = name); RUN;
+PROC SQL NOPRINT; SELECT name INTO:predictors SEPARATED BY " " FROM var; QUIT;
+%PUT &predictors; RUN;
+
+/* Variables in train_encoded but not in oot_encoded */
+PROC SQL NOPRINT;
+  CREATE TABLE train_vars AS SELECT name FROM dictionary.columns WHERE libname="WORK" AND memname="TRAIN_ENCODED";
+  CREATE TABLE oot_vars AS SELECT name FROM dictionary.columns WHERE libname="WORK" AND memname="OOT_ENCODED";
+  CREATE TABLE in_train_not_oot AS
+  SELECT * FROM train_vars
+  EXCEPT
+  SELECT * FROM oot_vars;
+QUIT;
+
+/* Print the differences */
+PROC PRINT DATA=in_train_not_oot; RUN;
+
+/* Create final train and OOT datasets */
+DATA train_encoded_final;
+  SET train_encoded (KEEP=&predictors bad);
+RUN;
+
+PROC FREQ DATA=train_encoded_final; TABLE bad; RUN;
+
+/*Create missing variables from TRAIN dataset*/
+DATA oot_encoded_final;
+  SET oot_encoded ;
+  home_ownership_ANY = 0;
+  purpose_wedding = 0;
+  KEEP &predictors bad  home_ownership_ANY purpose_wedding;
+RUN;
+
+PROC FREQ DATA=oot_encoded_final; TABLE bad; RUN;
+
+/* Split the modeling dataset by a 80/20 ratio using a random seed */
+PROC SURVEYSELECT DATA=train_encoded_final RATE=.8 OUTALL OUT=class2 SEED=42; RUN;
+
+PROC FREQ DATA= class2; TABLES selected; RUN;
+
+/* Create TRAIN and VAL datasets */
+DATA train_data val_data;
+  SET class2 ;
+  IF selected = 1 THEN OUTPUT train_data; ELSE OUTPUT val_data;
+RUN;
+
+/* Assess target rate in train, val and OOT datasets */
+PROC FREQ DATA = train_data; TABLES bad; RUN;
+PROC FREQ DATA = val_data;  TABLES bad; RUN;
+PROC FREQ DATA = oot_encoded_final;  TABLES bad; RUN; 
+
+/* Standardize the data */
+PROC STDIZE DATA=train_data OUT=train_data_std METHOD=STD;
+  VAR &predictors;
+RUN;
+
+PROC STDIZE DATA=val_data OUT=val_data_std METHOD=STD;
+  VAR &predictors;
+RUN;
+
+PROC STDIZE DATA=oot_encoded_final OUT=oot_encoded_final_std METHOD=STD;
+  VAR &predictors;
+RUN;
+
+/*Create hyperparameter tuning macro that will loop through a range of values for each of the tuning parameters */
+
+/* Create an empty summary_table dataset */
+PROC DELETE DATA=summary_table;
+
+DATA summary_table;
+	LENGTH Model 8;
+	FORMAT Area 8.5;
+RUN;
+
+%MACRO tune(iteration, kernal, C);
+	%put "Iteration: &iteration";
+	%put "Kernal: &kernal";
+	%put "C: &C";
+
+%let target = bad;
+
+	/* Build the SVM model */
+	PROC HPSVM DATA=train_data_std; 
+		INPUT &predictors. / LEVEL=INTERVAL;
+		TARGET &target. / ORDER=desc;
+		KERNEL=&kernal.; 
+		PENALTY C=&C.;
+		CODE FILE='/workspace/ccmod/u588348/svm.sas';
+	RUN;
+
+	PROC HP4SCORE DATA = val_data_std;
+		SCORE FILE = '/workspace/ccmod/u588348/svm.sas'
+		OUT = test_score_&iteration. (keep = &target. P_bad1);
+	RUN;
+
+	/* Calcuate AUC value on validation dataset */
+	proc logistic data = test_score_&iteration.;
+		class &target.;
+		model &target. = P_bad1 / outroc=ROC;
+		ROC;
+		ODS OUTPUT ROCASSOCIATION = auc_out;
+	run;
+
+	data outstat;
+		set auc_out;
+		Model = &iteration.;
+		where ROCModel = 'Model';
+		keep Model Area;
+	run;
+
+	/* Append the results to a summary table */
+	proc append base=summary_table data=outstat;
+	run;
+
+%mend;
+
+/* Call the macro with different hyperparameters */
+%tune(1, LINEAR, 1);
+%tune(2, POLYNOM, 1);
+%tune(3, RBF, 1);
+%tune(4, LINEAR, 10);
+%tune(5, POLYNOM, 10);
+%tune(6, RBF, 10);
+%tune(7, LINEAR, 100);
+%tune(8, POLYNOM, 100);
+%tune(9, RBF, 100);
+
+
+/* Build the final SVM model */
+PROC HPSVM DATA=train_data_std;
+	INPUT &predictors. / LEVEL=INTERVAL;
+	TARGET &target. / ORDER=desc;
+	PENALTY C=1;  /* Insert optimal hyperparameter value */
+	SELECT FOLD=3 CV=SPLIT;
+	KERNEL=RBF;  /* Insert optimal hyperparameter value */
+	CODE FILE='/workspace/ccmod/u588348/svm.sas';
+RUN;
+
+PROC HP4SCORE DATA = oot_encoded_final_std;
+	SCORE FILE = '/workspace/ccmod/u588348/svm.sas'
+	OUT = oot_scored (keep = &target. P_bad1);
+RUN;
+
+/* Calcuate AUC value on OOT dataset */
+PROC LOGISTIC DATA = oot_scored;
+	CLASS &target.;
+	MODEL &target. = P_bad1 / OUTROC=ROC;
+	ROC;
+	ODS OUTPUT ROCASSOCIATION = auc_out;
+RUN;
+
+
+
+
+
+##########################################################################################
+
+
+
+/*Neural Network Code:*/
+/* Load the data */
+DATA train_encoded;
+  SET james.train_encoded;
+RUN;
+
+DATA oot_encoded;
+  SET james.oot_encoded;
+RUN;
+
+/* Define the variables to exclude to avoid the dummy variable trap */
+%LET excluded_variables = id bad emp_length_3years term_36months grade_g sub_grade_b4 
+verification_status_sourceverifi purpose_home_improvement home_ownership_rent application_type_jointapp;
+
+/* Create global variable for predictors */
+PROC CONTENTS NOPRINT DATA = train_encoded (DROP= id bad &excluded_variables.) OUT = var (KEEP = name); RUN;
+PROC SQL NOPRINT; SELECT name INTO:predictors SEPARATED BY " " FROM var; QUIT;
+%PUT &predictors; RUN;
+
+/*Fit regression model and calculate VIF values*/
+PROC REG DATA=train_encoded ;
+  MODEL &target. = &predictors. / VIF;
+RUN;
+
+%let high_corr = GRADE_B int_rate;
+
+/* Remove correlated variables and create final global variable for predictors */
+PROC CONTENTS NOPRINT DATA = train_encoded (DROP= id &target. &excluded_variables. &high_corr.) OUT = var (KEEP = name); RUN;
+PROC SQL NOPRINT; SELECT name INTO:predictors SEPARATED BY " " FROM var; QUIT;
+%PUT &predictors; RUN;
+
+/* Variables in train_encoded but not in oot_encoded */
+PROC SQL NOPRINT;
+  CREATE TABLE train_vars AS SELECT name FROM dictionary.columns WHERE libname="WORK" AND memname="TRAIN_ENCODED";
+  CREATE TABLE oot_vars AS SELECT name FROM dictionary.columns WHERE libname="WORK" AND memname="OOT_ENCODED";
+  CREATE TABLE in_train_not_oot AS
+  SELECT * FROM train_vars
+  EXCEPT
+  SELECT * FROM oot_vars;
+QUIT;
+
+/* Print the differences */
+PROC PRINT DATA=in_train_not_oot; RUN;
+
+/* Create final train and OOT datasets */
+DATA train_encoded_final;
+  SET train_encoded (KEEP=&predictors bad);
+RUN;
+
+PROC FREQ DATA=train_encoded_final; TABLE bad; RUN;
+
+/*Create missing variables from TRAIN dataset*/
+DATA oot_encoded_final;
+  SET oot_encoded ;
+  home_ownership_ANY = 0;
+  purpose_wedding = 0;
+  KEEP &predictors bad  home_ownership_ANY purpose_wedding;
+RUN;
+
+PROC FREQ DATA=oot_encoded_final; TABLE bad; RUN;
+
+/* Split the modeling dataset by a 80/20 ratio using a random seed */
+PROC SURVEYSELECT DATA=train_encoded_final RATE=.8 OUTALL OUT=class2 SEED=42; RUN;
+
+PROC FREQ DATA= class2; TABLES selected; RUN;
+
+/* Create TRAIN and VAL datasets */
+DATA train_data val_data;
+  SET class2 ;
+  IF selected = 1 THEN OUTPUT train_data; ELSE OUTPUT val_data;
+RUN;
+
+/* Assess target rate in train, val and OOT datasets */
+PROC FREQ DATA = train_data; TABLES bad; RUN;
+PROC FREQ DATA = val_data;  TABLES bad; RUN;
+PROC FREQ DATA = oot_encoded_final;  TABLES bad; RUN; 
+
+/* Standardize the data */
+PROC STDIZE DATA=train_data OUT=train_data_std METHOD=STD;
+  VAR &predictors;
+RUN;
+
+PROC STDIZE DATA=val_data OUT=val_data_std METHOD=STD;
+  VAR &predictors;
+RUN;
+
+PROC STDIZE DATA=oot_encoded_final OUT=oot_encoded_final_std METHOD=STD;
+  VAR &predictors;
+RUN;
+
+/*Create hyperparameter tuning macro that will loop through a range of values for each of the tuning parameters */
+
+/* Create an empty summary_table dataset */
+PROC DELETE DATA=summary_table;
+
+DATA summary_table;
+	LENGTH Model 8;
+	FORMAT Area 8.5;
+RUN;
+
+%MACRO tune(iteration, hidden, nhidden);
+
+%let target = bad;
+
+	/* Build the SVM model */
+	PROC HPNEURAL DATA=train_data_std;
+		ARCHITECTURE MLP; 
+		INPUT &predictors. / LEVEL=INT;
+		TARGET &target. / LEVEL=NOM;
+		HIDDEN &nhidden.;
+		HIDDEN &hidden.;
+		TRAIN;
+		SCORE OUT=scored_NN;
+		CODE FILE='/workspace/ccmod/u588348/neural_network.sas';
+	RUN;
+
+	DATA test_score_&iteration. (keep = &target. P_bad1);
+		SET val_data_std;
+		%INCLUDE '/workspace/ccmod/u588348/neural_network.sas';
+	RUN;
+
+	/* Calcuate AUC value on validation dataset */
+	proc logistic data = test_score_&iteration.;
+		class &target.;
+		model &target. = P_bad1 / outroc=ROC;
+		ROC;
+		ODS OUTPUT ROCASSOCIATION = auc_out;
+	run;
+
+	data outstat;
+		set auc_out;
+		Model = &iteration.;
+		where ROCModel = 'Model';
+		keep Model Area;
+	run;
+
+	/* Append the results to a summary table */
+	proc append base=summary_table data=outstat;
+	run;
+
+%mend;
+
+
+/* Call the macro with different hyperparameters */
+%tune(1, 5,  32);
+%tune(2, 10, 32);
+%tune(3, 15, 32);
+%tune(4, 5,  64);
+%tune(5, 10, 64);
+%tune(6, 15, 64);
+%tune(7, 5,  128);
+%tune(8, 10, 128);
+%tune(9, 15, 128);
+
+PROC SORT DATA=summary_table; BY DESCENDING area; RUN;
+
+/* Build the optimized Neural Network model */
+PROC HPNEURAL DATA=train_data_std;
+  ARCHITECTURE MLP;
+  INPUT &predictors. / LEVEL=INT;
+  TARGET &target. / LEVEL=NOM;
+  HIDDEN 15;
+  HIDDEN 32;
+  TRAIN;
+  SCORE OUT=scored_NN;
+  CODE FILE='/workspace/ccmod/u588348/neural_network.sas';
+RUN;
+
+DATA oot_scored (keep = &target. P_bad1);
+  SET oot_encoded_final_std;
+  %INCLUDE '/workspace/ccmod/u588348/neural_network.sas';
+RUN;
+
+/* Calcuate AUC value on OOT dataset */
+PROC LOGISTIC DATA = oot_scored;
+	CLASS &target.;
+	MODEL &target. = P_bad1 / OUTROC=ROC;
+	ROC;
+	ODS OUTPUT ROCASSOCIATION = auc_out;
+run;
+
+
