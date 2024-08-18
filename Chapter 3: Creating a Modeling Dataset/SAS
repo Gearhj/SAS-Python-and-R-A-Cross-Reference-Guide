@@ -1,1 +1,298 @@
 
+/*Frequency distribution code:*/
+PROC FREQ DATA=LOAN_SAMP; TABLES loan_status; RUN;
+
+############################################################################################################
+
+/*Target variable assessment:*/
+DATA LOAN_SAMP; SET LOAN_SAMP;
+IF loan_status in ("Charged Off", "Does not meet the credit policy. Status:Charged Off") then bad = 1; else bad = 0; RUN;
+
+
+############################################################################################################
+
+/*Cross-tab frequency distribution code:*/
+PROC FREQ DATA=LOAN_SAMP; tables issue_d*bad; run;
+
+############################################################################################################
+
+/*Convert character variable to date:*/
+issue_d = INPUT(issue_d, MMDDYY9.);
+
+############################################################################################################
+
+/*Limit date range of modeling dataset:*/
+DATA loan_data; SET loan_samp;  WHERE '01JAN2014'd le issue_d le '31DEC2017'd; RUN;
+
+############################################################################################################
+
+/*Summary stats for numeric data:*/
+PROC MEANS DATA=loan_data N NMISS MIN P1 P25 P75 P99 MAX MEAN MEDIAN Skewness; RUN;
+
+############################################################################################################
+
+/*Histogram development with 50 bins:*/
+PROC UNIVARIATE DATA=loan_data; VAR loan_amnt; HIST; RUN;
+
+############################################################################################################
+/*Outlier detection and adjustment*/
+DATA outliers;
+/*Select numeric variables*/
+  SET loan_data (KEEP=_NUMERIC_);
+  ARRAY vars(*) loan_amnt -- pub_rec_bankruptcies;
+ 
+  DO i = 1 TO dim(vars);
+ 
+/*Infer outliers with 1.5 IQR rule*/
+      q1 = quantile(vars(i), 0.25);
+      q3 = quantile(vars(i), 0.75);
+ 
+/*Calculate the interquartile range (IQR)*/
+      iqr = q3 - q1;
+ 
+/*Calculate the lower and upper bounds for the outliers*/
+      low = q1 - 1.5 * iqr;
+      high = q3 + 1.5 * iqr;
+ 
+/*Replace outlier values with the 1.5 IQR rule values*/
+      IF vars(i) < low THEN vars(i) = low;
+      ELSE IF vars(i) > high THEN vars(i) = high;
+    END;
+ 
+    DROP i q1 q3 iqr low high;
+RUN;
+
+
+
+############################################################################################################
+
+
+/*Feature selection through correlation analysis*/
+/* Perform correlation analysis */
+PROC CORR DATA=numeric_data OUTP=corr_matrix NOPRINT; RUN;
+ 
+/* Set the threshold for correlation */
+%LET corr_threshold = 0.8;
+ 
+/* Find the highly correlated variables and remove them */
+DATA high_corr;
+    SET corr_matrix;
+    ARRAY _vars(*) _NUMERIC_;
+    DO i = 2 TO dim(_vars);
+        DO j = 1 TO i - 1;
+            IF abs(_vars(i)) >= &corr_threshold AND abs(_vars(i)) = abs(_vars(j)) THEN DO;
+                var1 = vname(_vars(i));
+                var2 = vname(_vars(j));
+                OUTPUT;
+            END;
+        END;
+    END;
+RUN;
+ 
+PROC SQL NOPRINT;
+    SELECT DISTINCT var1, var2 INTO :high_corr_cols separated by ' '
+    FROM high_corr;
+QUIT;
+ 
+DATA CORR_limit; SET numeric_data (DROP=&high_corr_cols); RUN;
+
+
+
+
+############################################################################################################
+
+
+/*Filtering with wrapper method:*/
+/*Create global variable for numeric variables*/
+PROC CONTENTS NOPRINT DATA = loan_data (KEEP = _NUMERIC_ 
+DROP=id bad) OUT = var (KEEP = name); RUN;
+PROC SQL NOPRINT; SELECT name INTO:num separated by " " FROM var; QUIT;
+ 
+/* Example using PROC GLMSELECT */
+ODS SELECT ALL;
+ODS GRAPHICS ON / WIDTH=800px HEIGHT=600px;  /* Adjust dimensions as needed */
+ 
+PROC GLMSELECT DATA=loan_data;
+    CLASS bad;
+    MODEL bad = &num. / SELECTION=backward;
+RUN;
+
+
+
+
+############################################################################################################
+
+
+/*Filtering with embedded method:*/
+/*Create global variable for numeric variables*/
+PROC CONTENTS NOPRINT DATA = loan_data (KEEP = _NUMERIC_ DROP=id bad) 
+OUT = var (KEEP = name); RUN;
+PROC SQL NOPRINT; SELECT name INTO:num separated by " " FROM var; QUIT;
+ 
+/* Create a copy of the data set to avoid modifying the original data */
+DATA work.filtered_data;
+    SET work.loan_data;
+RUN;
+ 
+/* Remove rows with missing values */
+DATA work.filtered_data;
+    SET work.filtered_data;
+    IF NOT missing(BAD) THEN OUTPUT;
+RUN;
+ 
+/* Specify the Random Forest classification model */
+PROC HPFOREST DATA=work.filtered_data;
+    TARGET BAD / LEVEL=binary;
+    INPUT &num. / LEVEL=interval;
+    ODS OUTPUT VariableImportance=var_importance;
+RUN;
+
+
+
+
+############################################################################################################
+
+
+/*Feature scaling:*/
+PROC STANDARD DATA=loan_data OUT=loan_data_scaled MEAN=0 STD=1;
+   VAR _NUMERIC_; /* Specify the numeric variables to scale */
+RUN;
+
+
+
+
+############################################################################################################
+
+
+/*Encoding categorical variables:*/
+PROC GLMSELECT DATA=loan_data OUTDESIGN=design;
+  CLASS home_ownership;
+  MODEL bad = home_ownership / SELECTION=STEPWISE;
+RUN;
+
+
+
+
+############################################################################################################
+
+
+/*Creating polynomial variables:*/
+DATA poly;
+  SET loan_data;
+  loan_amnt_poly = loan_amnt**2;
+RUN;
+
+
+
+
+############################################################################################################
+
+
+/*Create feature interactions:*/
+DATA loan_data;
+    SET loan_data;
+    DTI_INC_INTERACTION = dti * annual_inc;
+RUN;
+
+
+
+############################################################################################################
+
+
+/*Dimensionality Reduction with PCA:*/
+/* Standardize the data */
+PROC STANDARD DATA=loan_data OUT=loan_data_std MEAN=0 STD=1;
+   VAR total_acc open_acc pub_rec pub_rec_bankruptcies;
+RUN;
+ 
+/* Perform PCA analysis on standardized data */
+PROC PRINCOMP DATA=loan_data_std OUT=loan_data_pca;
+   VAR total_acc open_acc pub_rec pub_rec_bankruptcies;
+RUN;
+
+
+
+
+############################################################################################################
+
+
+/*Dataset balancing - 50/50 split:*/
+	
+/* Separate the positive and negative cases */
+DATA pos_cases neg_cases;
+    SET loan_data;
+    IF bad = 1 THEN OUTPUT pos_cases; ELSE OUTPUT neg_cases;
+RUN;
+ 
+/* Get the number of positive cases */
+PROC SQL NOPRINT;
+    SELECT count(*) INTO :pos_count
+    FROM pos_cases;
+QUIT;
+ 
+/* Randomly sample negative cases to match the number of positive cases */
+PROC SURVEYSELECT DATA=neg_cases OUT=neg_sample METHOD=srs 
+SAMPSIZE=&pos_count; RUN;
+ 
+/* Combine the positive and sampled negative cases */
+DATA balanced_data;
+    SET pos_cases neg_sample;
+RUN;
+ 
+/* Check the frequency distribution of the target variable */
+PROC FREQ DATA=balanced_data;
+    TABLES bad;
+RUN;
+
+
+
+
+############################################################################################################
+############################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
