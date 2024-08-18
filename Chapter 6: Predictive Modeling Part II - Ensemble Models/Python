@@ -1,1 +1,172 @@
+#Random Forest Model Code:
+# Import necessary libraries
+import pandas as pd
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
+import matplotlib.pyplot as plt
+
+# Function to calculate performance metrics
+def performance_metrics(y_true, y_pred):
+    print("Classification Report:")
+    print(classification_report(y_true, y_pred))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_true, y_pred))
+    print("ROC AUC Score:")
+    print(roc_auc_score(y_true, y_pred))
+
+# Load the data
+train_encoded = pd.read_csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv')
+OOT_encoded = pd.read_csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv')
+
+# Define predictors excluding the specified variables and the target variable
+predictors = [col for col in train_encoded.columns if col != 'bad']
+
+# Check if excluded variables are in OOT_encoded columns, if not then add them
+missing_cols = set(predictors) - set(OOT_encoded.columns)
+for c in missing_cols:
+    OOT_encoded[c] = 0
+    
+# Split the data into training and validation sets (80/20 split) using stratified sampling
+X_train, X_val, y_train, y_val = train_test_split(train_encoded[predictors], train_encoded['bad'], test_size=0.2, random_state=42, stratify=train_encoded['bad'])
+
+# Build the Random Forest model
+rf = RandomForestClassifier(random_state=42)
+
+# Define hyperparameters to tune
+param_grid = {'n_estimators': [100, 200, 300], 
+              'max_depth': [5, 10, 15], 
+              'min_samples_split': [2, 5, 10]}
+
+# Tune hyperparameters using GridSearchCV
+grid_search = GridSearchCV(rf, param_grid, cv=5, scoring='roc_auc')
+grid_search.fit(X_train, y_train)
+
+# Get the best model
+best_model = grid_search.best_estimator_
+
+# Apply the model to the OOT dataset
+OOT_predictions = best_model.predict(OOT_encoded[predictors])
+
+# Get the probabilities of the positive class
+OOT_probabilities = best_model.predict_proba(OOT_encoded[predictors])[:, 1]
+
+# Define your threshold
+threshold = 0.2
+
+# Apply threshold to get predictions
+OOT_predictions = (OOT_probabilities > threshold).astype(int)
+
+# Now you can evaluate your model using these predictions
+performance_metrics(OOT_encoded['bad'], OOT_predictions)
+
+# Plot ROC curve
+fpr, tpr, _ = roc_curve(OOT_encoded['bad'], OOT_predictions)
+plt.figure(figsize=(10, 8))
+plt.plot(fpr, tpr)
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.show()
+
+
+###############################################################################
+
+
+#Gradient Boosting Model Code:
+# Import necessary libraries
+import pandas as pd
+from sklearn.model_selection import train_test_split, GridSearchCV
+from xgboost import XGBClassifier
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, roc_curve
+import matplotlib.pyplot as plt
+
+# Function to calculate performance metrics
+def performance_metrics(y_true, y_pred):
+    print("Classification Report:")
+    print(classification_report(y_true, y_pred))
+    print("Confusion Matrix:")
+    print(confusion_matrix(y_true, y_pred))
+    print("ROC AUC Score:")
+    print(roc_auc_score(y_true, y_pred))
+
+# Load the data
+train_encoded = pd.read_csv('/...INPUT YOUR FILE PATHWAY.../train_encoded.csv')
+OOT_encoded = pd.read_csv('/...INPUT YOUR FILE PATHWAY.../oot_encoded.csv')
+
+print(train_encoded.columns)
+
+# Define predictors and the target variable
+predictors = [col for col in train_encoded.columns if col != 'bad']
+
+# Check if excluded variables are in OOT_encoded columns, if not then add them
+missing_cols = set(predictors) - set(OOT_encoded.columns)
+for c in missing_cols:
+    OOT_encoded[c] = 0
+    
+# Split the data into training and validation sets (80/20 split) using stratified sampling
+X_train, X_val, y_train, y_val = train_test_split(train_encoded[predictors], train_encoded['bad'], test_size=0.2, random_state=42, stratify=train_encoded['bad'])
+
+# Combine predictors and target variable into one DataFrame for undersampling
+train_data = pd.concat([X_train, y_train], axis=1)
+
+# Count the number of samples in the minority class
+minority_class_count = train_data['bad'].value_counts().min()
+
+# Perform undersampling on the majority class
+undersampled_data = pd.concat([train_data[train_data['bad'] == label].sample(minority_class_count, random_state=42) for label in train_data['bad'].unique()])
+
+# Get the resampled predictors and target variable
+X_train_resampled = undersampled_data[predictors]
+y_train_resampled = undersampled_data['bad']
+
+# Build the XGBoost model
+xgb = XGBClassifier(random_state=42)
+
+# Define hyperparameters to tune
+param_grid = {'n_estimators': [100, 200, 500],
+              'learning_rate': [0.1, 0.01, 0.001],
+              'max_depth': [3, 5, 7]}
+
+# Tune hyperparameters using GridSearchCV
+grid_search = GridSearchCV(xgb, param_grid, cv=5)
+grid_search.fit(X_train_resampled[predictors], y_train_resampled)
+
+# Get the best model
+best_model = grid_search.best_estimator_
+
+# Apply the model to the OOT dataset
+OOT_predictions = best_model.predict(OOT_encoded[predictors])
+
+# Create performance metrics using the function defined earlier
+performance_metrics(OOT_encoded['bad'], OOT_predictions)
+
+# Plot ROC curve
+fpr, tpr, _ = roc_curve(OOT_encoded['bad'], OOT_predictions)
+plt.figure(figsize=(10, 8))
+plt.plot(fpr, tpr)
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve')
+plt.show()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
