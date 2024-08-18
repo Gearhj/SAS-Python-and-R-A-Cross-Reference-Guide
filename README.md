@@ -9,17 +9,17 @@ Welcome to the official GitHub repository for the book **"SAS, Python, and R: A 
 The repository is organized as follows:
 
 - Chapter_01
-  -SAS_Code
-  -Python_Code
-  -R_Code
+    - SAS_Code
+    - Python_Code
+    - R_Code
 - Chapter_02
-  -SAS_Code
-  -Python_Code
--- R_Code
+    - SAS_Code
+    - Python_Code
+    - R_Code
 - Chapter_03
-  -SAS_Code
-  -Python_Code
-  -R_Code
+    - SAS_Code
+    - Python_Code
+    - R_Code
 ...
 
 
