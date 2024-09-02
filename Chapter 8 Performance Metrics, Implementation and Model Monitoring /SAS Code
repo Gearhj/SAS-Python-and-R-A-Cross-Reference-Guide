@@ -1,0 +1,204 @@
+
+##############################################
+#SAS Code
+##############################################
+
+#CREATE A SAMPLE DATASET
+
+DATA fraud_data;
+    ARRAY x[6];
+    CALL STREAMINIT(12345);
+    DO ID = 1 TO 1000;
+        CALL RANUNI(12345, w);
+        CALL RANUNI(12345, r);
+        DO i = 1 TO 4;
+            x[i] = (i <= 3) * (0.7 + 0.3 * r) * RANNOR(12345);
+        END;
+        x[5] = r * x[1];
+        x[6] = r * x[2];
+        Fraud = (w > 0.7);
+        FICO_Score = 300 + ROUND(550 * x[1]);
+        Num_Credit_Cards = ROUND(9 * RANUNI(12345) + 1);
+        Annual_Income = ROUND(20000 + x[2] * 130000);
+        Online_Purchase_Ind = ROUND(RANUNI(12345));
+        Trans_Amount = ROUND(50 + x[3] * 4950, 2);
+        Avg_Trans_Amount = ROUND(Trans_Amount / Num_Credit_Cards, 2);
+        OUTPUT;
+    END;
+RUN;
+
+
+
+
+
+##############################################
+
+#CREATE A RANDOM FOREST MODEL
+
+PROC HPSPLIT DATA=fraud_data;
+   CLASS Fraud;
+   MODEL Fraud = FICO_Score Num_Credit_Cards Annual_Income Online_Purchase_Ind Trans_Amount Avg_Trans_Amount;
+   GROW ENTROPY;
+   PRUNE COSTCOMPLEXITY;
+   OUTPUT OUT=rf_output PRED=pred;
+RUN;
+
+/* Confusion Matrix and Performance Metrics */
+PROC FREQ DATA=rf_output;
+   TABLES Fraud*pred / NOCOL NOPERCENT CHISQ MEASURES;
+   OUTPUT OUT=conf_matrix MEASURES=ALL;
+RUN;
+
+/* AUC, Gini, KS */
+PROC LOGISTIC DATA=rf_output PLOTS(ONLY)=ROC;
+   MODEL Fraud(EVENT='1') = pred;
+   ROC;
+RUN;
+
+/* Lift and Gain */
+PROC RANK DATA=rf_output OUT=lift_groups GROUPS=10;
+   VAR pred;
+   RANKS decile;
+RUN;
+
+PROC MEANS DATA=lift_groups MEAN;
+   CLASS decile;
+   VAR Fraud;
+RUN;
+
+
+
+########################################################
+
+#CREATE LIFT TABLE
+
+PROC RANK DATA=rf_model_output OUT=decile_groups GROUPS=10;
+   VAR predicted_proba;
+   RANKS Decile;
+RUN;
+
+PROC SUMMARY DATA=decile_groups NWAY;
+   CLASS Decile;
+   VAR actual target predicted_proba;
+   OUTPUT OUT=LiftTable 
+           N=Number_of_Cases 
+           SUM(target)=Number_of_Fraud_Cases 
+           MEAN(predicted_proba)=Average_Score;
+RUN;
+
+DATA LiftTable;
+   SET LiftTable;
+   BY Decile;
+   RETAIN Cumulative_Fraud_Cases Cumulative_Cases Gain Lift Cumulative_Non_Events Cum_Non_Events_Rate KS_Statistic;
+   IF _N_ = 1 THEN DO;
+      Cumulative_Fraud_Cases = 0;
+      Cumulative_Cases = 0;
+   END;
+   Cumulative_Fraud_Cases + Number_of_Fraud_Cases;
+   Cumulative_Cases + Number_of_Cases;
+   Gain = Cumulative_Fraud_Cases / SUM(Number_of_Fraud_Cases) * 100;
+   Lift = Gain / (Cumulative_Cases / SUM(Number_of_Cases) * 100);
+   Cumulative_Non_Events = Cumulative_Cases - Cumulative_Fraud_Cases;
+   Cum_Non_Events_Rate = Cumulative_Non_Events / (SUM(Number_of_Cases) - SUM(Number_of_Fraud_Cases));
+   KS_Statistic = ABS(Gain - Cum_Non_Events_Rate * 100);
+RUN;
+
+PROC PRINT DATA=LiftTable;
+   TITLE "Lift Table";
+RUN;
+
+PROC SGPLOT DATA=LiftTable;
+   SERIES X=Decile Y=Lift / MARKERS;
+   TITLE "Lift Chart";
+RUN;
+
+PROC SGPLOT DATA=LiftTable;
+   SERIES X=Decile Y=Gain / MARKERS;
+   TITLE "Gain Chart";
+RUN;
+
+
+#############################################################
+
+#REGRESSION EXAMPLE WITH PERFORMANCE METRICS
+
+/* GENERATING THE SYNTHETIC DATA */
+DATA housing;
+    CALL STREAMINIT(42);
+    DO i = 1 TO 100;
+        Bedrooms = RAND("Integer", 1, 5);
+        Bathrooms = RAND("Integer", 1, 3);
+        SquareFootage = RAND("Integer", 600, 3500);
+        Age = RAND("Integer", 0, 100);
+        DistanceFromCity = RAND("Integer", 1, 50);
+        Price = Bedrooms * 50000 + Bathrooms * 30000 + SquareFootage * 100 + Age * (-2000) + DistanceFromCity * (-3000) + RAND("Normal", 0, 10000);
+        OUTPUT;
+    END;
+RUN;
+
+/* SPLITTING THE DATA INTO TRAINING AND TESTING SETS */
+PROC SURVEYSELECT DATA=housing OUT=train SAMPRATE=0.7 OUTALL;
+RUN;
+
+DATA train test;
+    SET housing;
+    IF selected = 1 THEN OUTPUT train;
+    ELSE OUTPUT test;
+RUN;
+
+/* BUILDING THE LINEAR REGRESSION MODEL */
+PROC REG DATA=train OUTEST=est;
+    MODEL Price = Bedrooms Bathrooms SquareFootage Age DistanceFromCity;
+    OUTPUT OUT=pred P=Predicted R=Residual;
+RUN;
+
+/* GETTING THE PERFORMANCE METRICS FOR THE TEST DATASET */
+PROC REG DATA=test OUTEST=est_test;
+    MODEL Price = Bedrooms Bathrooms SquareFootage Age DistanceFromCity;
+    OUTPUT OUT=pred_test P=Predicted R=Residual;
+RUN;
+
+PROC MEANS DATA=pred_test MEAN;
+    VAR Residual;
+    OUTPUT OUT=metrics MEAN(Residual)=MAE;
+RUN;
+
+PROC SQL NOPRINT;
+    SELECT MEAN(Residual*Residual) INTO :MSE FROM pred_test;
+    SELECT SQRT(MEAN(Residual*Residual)) INTO :RMSE FROM pred_test;
+    SELECT 1 - (SUM(Residual*Residual) / SUM((Price - MEAN(Price))**2)) INTO :R_Squared FROM pred_test;
+    SELECT COUNT(*) INTO :n FROM test;
+    SELECT COUNT(*) INTO :p FROM dictionary.columns WHERE libname='WORK' AND memname='PRED_TEST' AND name IN ('Bedrooms', 'Bathrooms', 'SquareFootage', 'Age', 'DistanceFromCity');
+    SELECT 1 - ((1-&R_Squared)*(&n-1)/(&n-&p-1)) INTO :Adj_R_Squared FROM dual;
+QUIT;
+
+%PUT MSE = &MSE;
+%PUT MAE = &MAE;
+%PUT RMSE = &RMSE;
+%PUT R-SQUARED = &R_Squared;
+%PUT ADJUSTED R-SQUARED = &Adj_R_Squared;
+
+/* AIC AND BIC CALCULATION */
+PROC REG DATA=train;
+    MODEL Price = Bedrooms Bathrooms SquareFootage Age DistanceFromCity / AIC BIC;
+RUN;
+
+/* RESIDUAL PLOT */
+PROC SGPLOT DATA=pred_test;
+    SCATTER X=Predicted Y=Residual;
+    REFLINE 0 / AXIS=y LINEATTRS=(COLOR=red PATTERN=shortdash);
+    TITLE "Residual Plot";
+RUN;
+
+/* QQ PLOT */
+PROC UNIVARIATE DATA=pred_test;
+    QQPLOT Residual / NORMAL(MU=EST SIGMA=EST) SQUARE;
+    TITLE "QQ Plot";
+RUN;
+
+/* HISTOGRAM OF RESIDUALS */
+PROC SGPLOT DATA=pred_test;
+    HISTOGRAM Residual;
+    DENSITY Residual / TYPE=normal;
+    TITLE "Histogram of Residuals";
+RUN;
