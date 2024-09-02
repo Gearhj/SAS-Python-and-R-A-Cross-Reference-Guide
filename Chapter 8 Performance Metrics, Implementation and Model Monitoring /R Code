@@ -1,1 +1,237 @@
+##############################################
+#R Code
+##############################################
 
+#CREATE A SAMPLE DATASET
+
+library(caret)
+library(randomForest)
+library(pROC)
+
+set.seed(12345)
+n <- 1000
+
+fraud_data <- as.data.frame(
+  make_classification(n_samples=n, n_features=6, n_informative=3, n_redundant=2, n_clusters_per_class=2,
+                      weights=c(0.7, 0.3), flip_y=0.1, random_state=12345)
+)
+
+names(fraud_data) <- c('FICO_Score', 'Num_Credit_Cards', 'Annual_Income',
+                       'Online_Purchase_Ind', 'Trans_Amount', 'Avg_Trans_Amount', 'Fraud')
+
+
+
+##############################################
+
+#CREATE A RANDOM FOREST MODEL
+
+# Splitting the data
+trainIndex <- createDataPartition(fraud_data$Fraud, p = .7, 
+                                  list = FALSE, 
+                                  times = 1)
+train_data <- fraud_data[ trainIndex,]
+test_data  <- fraud_data[-trainIndex,]
+
+# Building the Random Forest model
+rf_model <- randomForest(Fraud ~ ., data=train_data)
+
+# Predictions and probabilities
+pred <- predict(rf_model, test_data, type="response")
+probs <- predict(rf_model, test_data, type="prob")[,2]
+
+# Confusion Matrix
+confusionMatrix(pred, test_data$Fraud)
+
+# AUC, Gini, KS
+roc_obj <- roc(test_data$Fraud, probs)
+auc(roc_obj)
+gini_coeff <- 2 * auc(roc_obj) - 1
+ks_stat <- max(roc_obj$sensitivities - roc_obj$specificities)
+
+# Lift and Gain Charts
+test_data$probs <- probs
+test_data$decile <- cut(probs, breaks=quantile(probs, probs=seq(0,1,0.1)), include.lowest=TRUE, labels=FALSE)
+
+lift_table <- aggregate(Fraud ~ decile, data=test_data, mean)
+gain_table <- aggregate(Fraud ~ decile, data=test_data, sum)
+gain_table$Cumulative_Gain <- cumsum(gain_table$Fraud)
+
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score, roc_curve, precision_score, recall_score, f1_score
+import pandas as pd
+import numpy as np
+
+# Splitting the data
+X_train, X_test, y_train, y_test = train_test_split(df[['FICO_Score', 'Num_Credit_Cards', 'Annual_Income', 'Online_Purchase_Ind', 'Trans_Amount', 'Avg_Trans_Amount']], df['Fraud'], test_size=0.3, random_state=12345)
+
+# Building the Random Forest model
+rf_model = RandomForestClassifier(n_estimators=100, random_state=12345)
+rf_model.fit(X_train, y_train)
+
+# Predicting and Evaluating the Model
+y_pred = rf_model.predict(X_test)
+y_proba = rf_model.predict_proba(X_test)[:, 1]
+
+# Confusion Matrix
+conf_matrix = confusion_matrix(y_test, y_pred)
+print(conf_matrix)
+
+# Performance Metrics
+print("Accuracy:", rf_model.score(X_test, y_test))
+print("Precision:", precision_score(y_test, y_pred))
+print("Recall:", recall_score(y_test, y_pred))
+print("F1 Score:", f1_score(y_test, y_pred))
+
+# ROC Curve and AUC
+roc_auc = roc_auc_score(y_test, y_proba)
+fpr, tpr, _ = roc_curve(y_test, y_proba)
+print("AUC:", roc_auc)
+
+# Gini Coefficient
+gini_coefficient = 2 * roc_auc - 1
+print("Gini Coefficient:", gini_coefficient)
+
+# KS Statistic
+ks_stat = max(tpr - fpr)
+print("KS Statistic:", ks_stat)
+
+# Lift and Gain Charts
+df_lift = pd.DataFrame({'prob': y_proba, 'target': y_test})
+df_lift['decile'] = pd.qcut(df_lift['prob'], 10, labels=False, duplicates='drop')
+
+lift = df_lift.groupby('decile').apply(lambda x: np.mean(x['target']))
+gain = df_lift.groupby('decile')['target'].sum().cumsum()
+print("Lift:\n", lift)
+print("Gain:\n", gain)
+
+
+########################################################
+
+#CREATE LIFT TABLE
+
+# Random Forest model is already built and we have y_proba and y_test
+df_lift <- data.frame(prob = y_proba, target = y_test)
+df_lift$decile <- cut(df_lift$prob, breaks = quantile(df_lift$prob, probs = seq(0, 1, by = 0.1)), include.lowest = TRUE, labels = FALSE)
+
+# Create Lift Table
+lift_table <- df_lift %>%
+  group_by(decile) %>%
+  summarise(
+    Number_of_Cases = n(),
+    Number_of_Fraud_Cases = sum(target),
+    Average_Score = mean(prob)
+  ) %>%
+  mutate(
+    Cumulative_Fraud_Cases = cumsum(Number_of_Fraud_Cases),
+    Cumulative_Cases = cumsum(Number_of_Cases),
+    `%_of_Events` = Number_of_Fraud_Cases / sum(Number_of_Fraud_Cases) * 100,
+    Gain = Cumulative_Fraud_Cases / sum(Number_of_Fraud_Cases) * 100,
+    Lift = Gain / (Cumulative_Cases / sum(Number_of_Cases) * 100)
+  )
+
+# Calculate Cumulative Non-Events and KS Statistic
+lift_table <- lift_table %>%
+  mutate(
+    Cumulative_Non_Events = Cumulative_Cases - Cumulative_Fraud_Cases,
+    Cum_Non_Events_Rate = Cumulative_Non_Events / (sum(Number_of_Cases) - sum(Number_of_Fraud_Cases)),
+    KS_Statistic = abs(Gain - Cum_Non_Events_Rate * 100)
+  )
+
+# Print Lift Table
+print(lift_table)
+
+# Plot Lift Chart
+ggplot(lift_table, aes(x = as.numeric(decile), y = Lift)) +
+  geom_line() +
+  geom_point() +
+  ggtitle('Lift Chart') +
+  xlab('Decile') +
+  ylab('Lift') +
+  theme_minimal()
+
+# Plot Gain Chart
+ggplot(lift_table, aes(x = as.numeric(decile), y = Gain)) +
+  geom_line() +
+  geom_point() +
+  ggtitle('Gain Chart') +
+  xlab('Decile') +
+  ylab('Gain (%)') +
+  theme_minimal()
+
+
+##################################################################
+
+# REGRESSION EXAMPLE WITH PERFORMANCE METRICS
+
+# Load necessary libraries
+library(ggplot2)
+library(stats)
+library(MASS)
+
+# Synthetic Data
+set.seed(42)
+n <- 100
+Bedrooms <- sample(1:5, n, replace = TRUE)
+Bathrooms <- sample(1:3, n, replace = TRUE)
+SquareFootage <- sample(600:3500, n, replace = TRUE)
+Age <- sample(0:100, n, replace = TRUE)
+DistanceFromCity <- sample(1:50, n, replace = TRUE)
+Price <- Bedrooms * 50000 + Bathrooms * 30000 + SquareFootage * 100 + Age * (-2000) + DistanceFromCity * (-3000) + rnorm(n, mean = 0, sd = 10000)
+
+# Creating the DataFrame
+df <- data.frame(Bedrooms, Bathrooms, SquareFootage, Age, DistanceFromCity, Price)
+
+# Splitting the data into training and testing sets
+set.seed(42)
+train_idx <- sample(1:n, size = 0.7 * n)
+train_data <- df[train_idx, ]
+test_data <- df[-train_idx, ]
+
+# Building the Linear Regression Model
+model <- lm(Price ~ Bedrooms + Bathrooms + SquareFootage + Age + DistanceFromCity, data = train_data)
+
+# Predictions
+y_pred <- predict(model, newdata = test_data)
+y_test <- test_data$Price
+
+# Calculating Metrics
+mse <- mean((y_test - y_pred)^2)
+mae <- mean(abs(y_test - y_pred))
+rmse <- sqrt(mse)
+r_squared <- summary(model)$r.squared
+adj_r_squared <- summary(model)$adj.r.squared
+
+cat("MSE:", mse, "\n")
+cat("MAE:", mae, "\n")
+cat("RMSE:", rmse, "\n")
+cat("R-Squared:", r_squared, "\n")
+cat("Adjusted R-Squared:", adj_r_squared, "\n")
+
+# AIC and BIC
+aic <- AIC(model)
+bic <- BIC(model)
+
+cat("AIC:", aic, "\n")
+cat("BIC:", bic, "\n")
+
+# Residuals
+residuals <- y_test - y_pred
+
+# Residual Plot
+ggplot(data.frame(y_pred, residuals), aes(x = y_pred, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Residual Plot", x = "Predicted Values", y = "Residuals")
+
+# QQ Plot
+qqnorm(residuals)
+qqline(residuals, col = "red")
+title("QQ Plot")
+
+# Histogram of Residuals
+ggplot(data.frame(residuals), aes(x = residuals)) +
+  geom_histogram(binwidth = 10000, fill = "blue", alpha = 0.7) +
+  geom_density(color = "red") +
+  labs(title = "Histogram of Residuals", x = "Residuals", y = "Frequency")
