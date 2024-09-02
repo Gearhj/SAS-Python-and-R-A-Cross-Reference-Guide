@@ -1,0 +1,223 @@
+##############################################
+#Python Code
+##############################################
+
+#CREATE A SAMPLE DATASET
+
+from sklearn.datasets import make_classification
+import pandas as pd
+import numpy as np
+
+np.random.seed(12345)
+n = 1000
+
+# Reducing the number of informative features and adding noise
+X, y = make_classification(n_samples=n, n_features=6, n_informative=3, n_redundant=2, n_repeated=1,
+                           n_clusters_per_class=2, weights=[0.7, 0.3], flip_y=0.1, class_sep=0.8, random_state=12345)
+
+df = pd.DataFrame(X, columns=['FICO_Score', 'Num_Credit_Cards', 'Annual_Income',
+                              'Online_Purchase_Ind', 'Trans_Amount', 'Avg_Trans_Amount'])
+df['Fraud'] = y
+
+
+
+
+##############################################
+
+#CREATE A RANDOM FOREST MODEL
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report, roc_auc_score, roc_curve, precision_score, recall_score, f1_score
+import pandas as pd
+import numpy as np
+
+# Splitting the data
+X_train, X_test, y_train, y_test = train_test_split(df[['FICO_Score', 'Num_Credit_Cards', 'Annual_Income', 'Online_Purchase_Ind', 'Trans_Amount', 'Avg_Trans_Amount']], df['Fraud'], test_size=0.3, random_state=12345)
+
+# Building the Random Forest model
+rf_model = RandomForestClassifier(n_estimators=100, random_state=12345)
+rf_model.fit(X_train, y_train)
+
+# Predicting and Evaluating the Model
+y_pred = rf_model.predict(X_test)
+y_proba = rf_model.predict_proba(X_test)[:, 1]
+
+# Confusion Matrix
+conf_matrix = confusion_matrix(y_test, y_pred)
+print(conf_matrix)
+
+# Performance Metrics
+print("Accuracy:", rf_model.score(X_test, y_test))
+print("Precision:", precision_score(y_test, y_pred))
+print("Recall:", recall_score(y_test, y_pred))
+print("F1 Score:", f1_score(y_test, y_pred))
+
+# ROC Curve and AUC
+roc_auc = roc_auc_score(y_test, y_proba)
+fpr, tpr, _ = roc_curve(y_test, y_proba)
+print("AUC:", roc_auc)
+
+# Gini Coefficient
+gini_coefficient = 2 * roc_auc - 1
+print("Gini Coefficient:", gini_coefficient)
+
+# KS Statistic
+ks_stat = max(tpr - fpr)
+print("KS Statistic:", ks_stat)
+
+# Lift and Gain Charts
+df_lift = pd.DataFrame({'prob': y_proba, 'target': y_test})
+df_lift['decile'] = pd.qcut(df_lift['prob'], 10, labels=False, duplicates='drop')
+
+lift = df_lift.groupby('decile').apply(lambda x: np.mean(x['target']))
+gain = df_lift.groupby('decile')['target'].sum().cumsum()
+print("Lift:\n", lift)
+print("Gain:\n", gain)
+
+
+
+########################################################
+
+#CREATE LIFT TABLE
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Assuming the Random Forest model is already built and we have y_proba and y_test
+df_lift = pd.DataFrame({'prob': y_proba, 'target': y_test})
+df_lift['decile'] = pd.qcut(df_lift['prob'], 10, labels=False, duplicates='drop')
+
+# Create Lift Table
+lift_table = df_lift.groupby('decile').agg(
+    Number_of_Cases=('target', 'size'),
+    Number_of_Fraud_Cases=('target', 'sum'),
+    Average_Score=('prob', 'mean')
+).reset_index()
+
+lift_table['Cumulative_Fraud_Cases'] = lift_table['Number_of_Fraud_Cases'].cumsum()
+lift_table['Cumulative_Cases'] = lift_table['Number_of_Cases'].cumsum()
+lift_table['%_of_Events'] = lift_table['Number_of_Fraud_Cases'] / lift_table['Number_of_Fraud_Cases'].sum() * 100
+lift_table['Gain'] = lift_table['Cumulative_Fraud_Cases'] / lift_table['Number_of_Fraud_Cases'].sum() * 100
+lift_table['Lift'] = lift_table['Gain'] / (lift_table['Cumulative_Cases'] / lift_table['Number_of_Cases'].sum() * 100)
+
+# Calculate Cumulative Non-Events and KS Statistic
+lift_table['Cumulative_Non_Events'] = lift_table['Cumulative_Cases'] - lift_table['Cumulative_Fraud_Cases']
+lift_table['Cumulative_Non_Event_Rate'] = lift_table['Cumulative_Non_Events'] / (lift_table['Number_of_Cases'].sum() - lift_table['Number_of_Fraud_Cases'].sum())
+lift_table['KS_Statistic'] = abs(lift_table['Gain'] - lift_table['Cumulative_Non_Event_Rate'] * 100)
+
+# Print Lift Table
+print(lift_table)
+
+# Plot Lift Chart
+plt.plot(lift_table['decile'] + 1, lift_table['Lift'], marker='o', color='blue')
+plt.title('Lift Chart')
+plt.xlabel('Decile')
+plt.ylabel('Lift')
+plt.grid(True)
+plt.show()
+
+# Plot Gain Chart
+plt.plot(lift_table['decile'] + 1, lift_table['Gain'], marker='o', color='green')
+plt.title('Gain Chart')
+plt.xlabel('Decile')
+plt.ylabel('Gain (%)')
+plt.grid(True)
+plt.show()
+
+
+#############################################################
+
+#REGRESSION EXAMPLE WITH PERFORMANCE METRICS
+
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+import statsmodels.api as sm
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Synthetic Data (add your data here)
+np.random.seed(42)
+n = 100
+Bedrooms = np.random.randint(1, 6, n)
+Bathrooms = np.random.randint(1, 4, n)
+SquareFootage = np.random.randint(600, 3500, n)
+Age = np.random.randint(0, 100, n)
+DistanceFromCity = np.random.randint(1, 50, n)
+Price = Bedrooms*50000 + Bathrooms*30000 + SquareFootage*100 + Age*(-2000) + DistanceFromCity*(-3000) + np.random.normal(0, 10000, n)
+
+# Creating the DataFrame
+df = pd.DataFrame({
+    'Bedrooms': Bedrooms,
+    'Bathrooms': Bathrooms,
+    'SquareFootage': SquareFootage,
+    'Age': Age,
+    'DistanceFromCity': DistanceFromCity,
+    'Price': Price
+})
+
+# Splitting the data
+X = df[['Bedrooms', 'Bathrooms', 'SquareFootage', 'Age', 'DistanceFromCity']]
+y = df['Price']
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+# Building the Linear Regression Model
+model = LinearRegression()
+model.fit(X_train, y_train)
+
+# Predictions
+y_pred = model.predict(X_test)
+
+# Calculating Metrics
+mse = mean_squared_error(y_test, y_pred)
+mae = mean_absolute_error(y_test, y_pred)
+rmse = np.sqrt(mse)
+r_squared = model.score(X_test, y_test)
+
+# Adjusted R-squared
+n = len(y_test)
+p = X_test.shape[1]
+adj_r_squared = 1 - (1-r_squared)*(n-1)/(n-p-1)
+
+print(f"MSE: {mse}")
+print(f"MAE: {mae}")
+print(f"RMSE: {rmse}")
+print(f"R-Squared: {r_squared}")
+print(f"Adjusted R-Squared: {adj_r_squared}")
+
+# Calculating AIC and BIC using statsmodels
+X_train_sm = sm.add_constant(X_train)  # Adding a constant term
+model_sm = sm.OLS(y_train, X_train_sm).fit()
+aic = model_sm.aic
+bic = model_sm.bic
+
+print(f"AIC: {aic}")
+print(f"BIC: {bic}")
+
+# Residuals
+residuals = y_test - y_pred
+
+# Residual Plot
+plt.figure(figsize=(8, 5))
+plt.scatter(y_pred, residuals)
+plt.axhline(0, color='red', linestyle='--')
+plt.xlabel('Predicted Values')
+plt.ylabel('Residuals')
+plt.title('Residual Plot')
+plt.show()
+
+# QQ Plot
+sm.qqplot(residuals, line='s')
+plt.title('QQ Plot')
+plt.show()
+
+# Histogram of Residuals
+plt.figure(figsize=(8, 5))
+sns.histplot(residuals, kde=True)
+plt.xlabel('Residuals')
+plt.title('Histogram of Residuals')
+plt.show()
